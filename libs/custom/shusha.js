@@ -1,1 +1,0 @@
-/mnt/ntfs2/HDD/shushah

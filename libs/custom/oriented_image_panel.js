@@ -18,6 +18,7 @@
  *     ← / →          previous / next image
  *     Space (hold)   "peek" — momentarily hide the photo to reveal the cloud
  *     [ / ]          nudge opacity down / up
+ *     W              cycle opacity: 100% -> 50% -> 0% -> 50% -> 100% ...
  *
  * Usage:
  *   Include this file AFTER Potree, the viewer, and the modified potree.js
@@ -291,6 +292,7 @@
         collection: null,      // active OrientedImages instance
         currentImage: null,    // focused OrientedImage
         opacity: 1.0,          // current photo opacity (sticky during navigation)
+        opacityToggleDir: -1,  // -1 = W is heading toward 0%, 1 = heading toward 100%
         peeking: false,        // Space-to-peek active
         peekPrevOpacity: 1.0,
     };
@@ -506,8 +508,8 @@
         elOpacityVal = document.createElement("span");
         elOpacityVal.className = "oi-opacity-value";
         elOpacityVal.textContent = "100%";
-        elOpacityVal.title = "Toggle photo on/off (W)";
-        elOpacityVal.addEventListener("click", () => setOpacity(orientedImageState.opacity > 0 ? 0 : 1.0));
+        elOpacityVal.title = "Cycle photo opacity: 100% / 50% / 0% (W)";
+        elOpacityVal.addEventListener("click", () => toggleOpacityCycle());
         opacity.appendChild(elOpacityVal);
 
         panel.appendChild(opacity);
@@ -551,6 +553,22 @@
         }
         if (elSlider) elSlider.value = String(a);
         if (elOpacityVal) elOpacityVal.textContent = Math.round(a * 100) + "%";
+    }
+
+    // Cycles opacity 100% -> 50% -> 0% -> 50% -> 100% -> ... on each call.
+    function toggleOpacityCycle() {
+        const a = orientedImageState.opacity;
+        let next;
+        if (a > 0.5) {
+            next = 0.5;
+            orientedImageState.opacityToggleDir = -1; // next stop is 0%
+        } else if (a < 0.5) {
+            next = 0.5;
+            orientedImageState.opacityToggleDir = 1; // next stop is 100%
+        } else {
+            next = orientedImageState.opacityToggleDir < 0 ? 0 : 1.0;
+        }
+        setOpacity(next);
     }
 
     function navigate(offset) {
@@ -611,7 +629,10 @@
         orientedImageState.controls = e.controls;
         orientedImageState.collection = e.controls.orientedImagesInstance;
         enterPanel(e.image, /* resetOpacity */ true);
-        if(document.getElementById("brushPanel")) setPCMaterial("classification");
+        if(document.getElementById("brushPanel")) {
+            setPCMaterial("classification");
+            if (typeof enterClassBlendForOrientedImage === "function") enterClassBlendForOrientedImage();
+        }
     });
 
     viewer.addEventListener("oriented_image_changed", (e) => {
@@ -619,7 +640,10 @@
         orientedImageState.controls = e.controls;
         orientedImageState.collection = e.controls.orientedImagesInstance;
         enterPanel(e.image, /* resetOpacity */ false);
-        if(document.getElementById("brushPanel")) setPCMaterial("classification");
+        if(document.getElementById("brushPanel")) {
+            setPCMaterial("classification");
+            if (typeof enterClassBlendForOrientedImage === "function") enterClassBlendForOrientedImage();
+        }
     });
 
     viewer.addEventListener("oriented_image_released", () => {
@@ -630,6 +654,13 @@
         orientedImageState.collection = null;
         orientedImageState.currentImage = null;
         setPCMaterial("rgba classes");
+        if (typeof exitClassBlendForOrientedImage === "function") exitClassBlendForOrientedImage();
+        // Undo the global OI toggle only if Shift+click was the one that
+        // flipped it on — leave a manually-enabled toggle alone.
+        if (window.brushState && window.brushState._globalOIForcedByShiftClick) {
+            window.brushState._globalOIForcedByShiftClick = false;
+            if (typeof setAllOrientedImagesVisibility === "function") setAllOrientedImagesVisibility(false);
+        }
     });
 
     viewer.addEventListener("oriented_image_texture_loaded", (e) => {
@@ -677,8 +708,8 @@
                 break;
             case "w":
             case "W":
-                // toggle photo fully off / fully on
-                setOpacity(orientedImageState.opacity > 0 ? 0 : 1.0);
+                // cycle photo opacity: 100% -> 50% -> 0% -> 50% -> 100% ...
+                toggleOpacityCycle();
                 e.preventDefault();
                 break;
             case " ":

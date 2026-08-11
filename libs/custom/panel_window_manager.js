@@ -66,6 +66,7 @@
         zoneCreationMenu: { title: "Zone Creation & Management", titleSel: ":scope > h3",      closeSel: ".zone-form-close", w: 400, minW: 320, minH: 200, fixup: fixupZonePanel },
         zoneSearchMenu:   { title: "Zones",                      titleSel: ":scope > h3",      closeSel: ".zone-form-close", w: 400, minW: 320, minH: 200, fixup: fixupZonePanel },
         searchCameraMenu: { title: "Camera Search",              titleSel: ":scope > h3",      closeSel: ".zone-form-close", w: 400, minW: 320, minH: 200 },
+        zoneDescWindow:   { title: "Description",                titleSel: ".zs-desc-titlebar h4", closeSel: ".zs-desc-close", w: 380, minW: 280, minH: 140, fixup: fixupDescWindow },
     };
 
     // ══════════════════════════════════════════════════════════════
@@ -145,6 +146,17 @@
             if (!document.body.contains(frame)) { obs.disconnect(); sentinel.disconnect(); }
         });
         sentinel.observe(document.body, { childList: true, subtree: true });
+    }
+
+    /**
+     * The zone/annotation description window carries its own titlebar with
+     * drag logic. The frame's titlebar replaces it entirely, so hide the
+     * whole in-body bar (syncHeader only hides the h4 and × inside it, which
+     * would leave an empty grabbable strip behind).
+     */
+    function fixupDescWindow(panel) {
+        const bar = panel.querySelector(".zs-desc-titlebar");
+        if (bar) bar.style.setProperty("display", "none", "important");
     }
 
     // Placement geometry
@@ -330,6 +342,15 @@
         const vw = window.innerWidth;
         const vh = window.innerHeight;
         const rects = [...document.querySelectorAll(".pwm-frame.pwm-placed")]
+            // Skip frames whose panel was just removed but whose teardown
+            // observer hasn't fired yet (e.g. replacing one description
+            // window with another in the same tick). Counting such ghost
+            // frames as obstacles would place the new window in a different
+            // slot than a close-then-open would.
+            .filter((f) => {
+                const body = f.querySelector(".pwm-body");
+                return body && body.firstElementChild;
+            })
             .map((f) => f.getBoundingClientRect());
 
         const colStep = w + GAP;

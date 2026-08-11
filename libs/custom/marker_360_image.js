@@ -48,7 +48,11 @@ function _open360(sphereMarker) {
     const marker360 = sphereMarker.userData.marker360;
     if (!marker360 || !marker360.image) return;
 
-    if(sphereMarker1 && !sphereMarker1.visible) sphereMarker1.visible = true; 
+    // Track which marker is being viewed so UIs (zone search) can highlight it.
+    window.viewing360Marker = marker360;
+    document.dispatchEvent(new CustomEvent("viewing-360-changed"));
+
+    if(sphereMarker1 && !sphereMarker1.visible && !window.imageMarkersGloballyHidden) sphereMarker1.visible = true;
 
     sphereMarker1 = sphereMarker;
 
@@ -351,7 +355,17 @@ function close360() {
     document.getElementById("photo360").style.display = "none";
     window.in360View = false;
 
-    sphereMarker1.visible = true;
+    window.viewing360Marker = null;
+    document.dispatchEvent(new CustomEvent("viewing-360-changed"));
+
+    // Re-show the sphere hidden on open — unless the global image-marker
+    // toggle went off in the meantime (a 360 can be opened from the zone
+    // search list even while markers are masked).
+    const mk360 = sphereMarker1 && sphereMarker1.userData && sphereMarker1.userData.marker360;
+    sphereMarker1.visible = !window.imageMarkersGloballyHidden;
+    if (window.imageMarkersGloballyHidden && mk360 && mk360._hitMesh) {
+        mk360._hitMesh.raycast = () => {};
+    }
 
     // Restore Potree camera
     if (pre360View) {

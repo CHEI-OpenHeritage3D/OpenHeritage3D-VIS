@@ -23,7 +23,7 @@ window.annotationsTemp = [];
 
 // Zone class (structure for each zone)
 class Zone {
-    constructor(name, parent, priority, pointclouds = [], boundingBoxes = [], annotations = [], layerMaps = [], marker360s = [], beacon, description, background, isDefault = false, orientedImagesHandler) {
+    constructor(name, parent, priority, pointclouds = [], boundingBoxes = [], annotations = [], layerMaps = [], marker360s = [], beacon, description, background, isDefault = false, orientedImagesHandlers = []) {
         this.name = name;                    // name of the zone
         this.pointclouds = pointclouds;      // list of pointcloud IDs/names
         this.boundingBoxes = boundingBoxes;  // list of bounding box objects
@@ -36,25 +36,58 @@ class Zone {
         this.description = description;
         this.background = background;
         this.isDefault = isDefault;
-        this.orientedImagesHandler = orientedImagesHandler;
+        this.orientedImagesHandlers = orientedImagesHandlers; // list of orientedImagesHandler
     }
 }
 
 class orientedImagesHandler {
-    constructor(cameraParamsPath, imageParamsPath){
+    constructor(cameraParamsPath, imageParamsPath, name){
         this.cameraParamsPath = cameraParamsPath;
         this.imageParamsPath = imageParamsPath;
+        this.name = name || "";
+        // Hidden until the owning zone switches on (resetZoneOrientedImages)
+        // or the set's checkbox enables it.
+        this._hidden = true;
 
         Potree.OrientedImageLoader.load(cameraParamsPath, imageParamsPath, viewer).then( images => {
             this.images = images;
+            // Loading is async: the set's visibility may have been decided
+            // while the images were still in flight, and freshly loaded meshes
+            // are pickable by the loader's own raycaster even when they are
+            // not in the scene. Apply the current state so a hidden set is
+            // neither drawn nor pickable.
+            setZoneOrientedImagesVisibility(images, !this._hidden);
 	    });
     }
+}
+
+// Rebuild a zone's oriented-image handlers from imported JSON. Accepts the
+// current array form (orientedImagesHandlers) and the legacy single-object
+// form (orientedImagesHandler) so old zones.json files keep working.
+function buildOrientedImagesHandlers(z) {
+    const defs = Array.isArray(z.orientedImagesHandlers)
+        ? z.orientedImagesHandlers
+        : (z.orientedImagesHandler ? [z.orientedImagesHandler] : []);
+
+    const handlers = [];
+    for (const def of defs) {
+        if (!def || !def.cameraParamsPath || !def.imageParamsPath) continue;
+        try { handlers.push(new orientedImagesHandler(def.cameraParamsPath, def.imageParamsPath, def.name)); }
+        catch (e) { console.warn("orientedImagesHandler failed to load on import:", e); }
+    }
+    return handlers;
 }
 
 // Inject styles
 const style = document.createElement("style");
 
 style.textContent += `
+/* Global oriented-image toggle — lives inline in the toolbar (between
+   Material and Zones); #oiToggleSection/#oiToggleSeparator in index.html
+   are shown/hidden by updateGlobalOrientedImageToggle(). This rule just
+   dims the icon while everything is masked off. */
+#globalOIToggle.oi-off { opacity: 0.3; filter: grayscale(1) brightness(1.3); }
+
 /* =======================
    DARK THEME ZONE PANEL
    ======================= */
@@ -1323,38 +1356,100 @@ function openZoneForm(zone = null) {
     beaconBody.appendChild(camBtn);
 
     // ═══════════════════════════════════════════════════════
-    //  SECTION 9 · ORIENTED IMAGES (camera params + image params)
+    //  SECTION 9 · ORIENTED IMAGES (any number of image sets,
+    //  each with a name + camera params + image params)
     // ═══════════════════════════════════════════════════════
-    const oiBody = makeSection("Oriented Images");
+    const existingOIHs = isEdit
+        ? (zone.orientedImagesHandlers || (zone.orientedImagesHandler ? [zone.orientedImagesHandler] : []))
+        : [];
+
+    const oiBody = makeSection("Oriented Images", { badge: existingOIHs.length || null });
 
     const oiHint = document.createElement("p");
     oiHint.className = "hint";
-    oiHint.textContent = "Paths to the oriented-image parameter files. Both must be set to load oriented images for this zone.";
+    oiHint.textContent = "Add one entry per set of oriented images. Both paths must be set for a set to load; incomplete sets are dropped on save.";
     oiBody.appendChild(oiHint);
 
-    const camParamsLabel = document.createElement("label");
-    camParamsLabel.textContent = "Camera Params Path:";
-    const camParamsInput = document.createElement("input");
-    camParamsInput.type = "text";
-    camParamsInput.placeholder = "e.g. path/to/cameras.json";
-    camParamsInput.id = "zoneCameraParamsPath";
-    if (isEdit && zone.orientedImagesHandler) {
-        camParamsInput.value = zone.orientedImagesHandler.cameraParamsPath || "";
-    }
-    oiBody.appendChild(camParamsLabel);
-    oiBody.appendChild(camParamsInput);
+    const oiList = document.createElement("div");
+    oiBody.appendChild(oiList);
 
-    const imgParamsLabel = document.createElement("label");
-    imgParamsLabel.textContent = "Image Params Path:";
-    const imgParamsInput = document.createElement("input");
-    imgParamsInput.type = "text";
-    imgParamsInput.placeholder = "e.g. path/to/images.json";
-    imgParamsInput.id = "zoneImageParamsPath";
-    if (isEdit && zone.orientedImagesHandler) {
-        imgParamsInput.value = zone.orientedImagesHandler.imageParamsPath || "";
+    // Live list of image-set rows; read back at save time. Removed rows are
+    // spliced out immediately, so the array always mirrors the UI.
+    const oiEntries = [];
+
+    function addOIEntry(existingHandler) {
+        const entry = document.createElement("div");
+        entry.style.cssText = "border:1px solid rgba(255,255,255,0.12); border-radius:8px; padding:8px 10px 10px; margin-bottom:10px;";
+
+        const head = document.createElement("div");
+        head.style.cssText = "display:flex; align-items:center; justify-content:space-between; gap:8px;";
+
+        const headLabel = document.createElement("span");
+        headLabel.className = "hint";
+        headLabel.textContent = `Image Set ${oiEntries.length + 1}`;
+        head.appendChild(headLabel);
+
+        const removeBtn = document.createElement("button");
+        removeBtn.textContent = "Remove";
+        removeBtn.className = "sub-btn clear-btn";
+        removeBtn.style.cssText = "margin-top:0; padding:2px 10px; width:auto;";
+        head.appendChild(removeBtn);
+        entry.appendChild(head);
+
+        const setNameLabel = document.createElement("label");
+        setNameLabel.textContent = "Set Name:";
+        const setNameInput = document.createElement("input");
+        setNameInput.type = "text";
+        setNameInput.placeholder = "e.g. Facade photos";
+        setNameInput.value = existingHandler ? (existingHandler.name || "") : "";
+        entry.appendChild(setNameLabel);
+        entry.appendChild(setNameInput);
+
+        const camParamsLabel = document.createElement("label");
+        camParamsLabel.textContent = "Camera Params Path:";
+        const camParamsInput = document.createElement("input");
+        camParamsInput.type = "text";
+        camParamsInput.placeholder = "e.g. path/to/cameras.json";
+        camParamsInput.value = existingHandler ? (existingHandler.cameraParamsPath || "") : "";
+        entry.appendChild(camParamsLabel);
+        entry.appendChild(camParamsInput);
+
+        const imgParamsLabel = document.createElement("label");
+        imgParamsLabel.textContent = "Image Params Path:";
+        const imgParamsInput = document.createElement("input");
+        imgParamsInput.type = "text";
+        imgParamsInput.placeholder = "e.g. path/to/images.json";
+        imgParamsInput.value = existingHandler ? (existingHandler.imageParamsPath || "") : "";
+        entry.appendChild(imgParamsLabel);
+        entry.appendChild(imgParamsInput);
+
+        const record = { setNameInput, camParamsInput, imgParamsInput, existingHandler: existingHandler || null };
+        oiEntries.push(record);
+
+        removeBtn.addEventListener("click", (e) => {
+            e.preventDefault();
+            const idx = oiEntries.indexOf(record);
+            if (idx !== -1) oiEntries.splice(idx, 1);
+            entry.remove();
+            // Renumber the remaining set labels
+            oiList.querySelectorAll(":scope > div > div > span").forEach((lbl, i) => {
+                lbl.textContent = `Image Set ${i + 1}`;
+            });
+        });
+
+        oiList.appendChild(entry);
     }
-    oiBody.appendChild(imgParamsLabel);
-    oiBody.appendChild(imgParamsInput);
+
+    for (const h of existingOIHs) addOIEntry(h);
+
+    const addOIBtn = document.createElement("button");
+    addOIBtn.textContent = "＋ Add Image Set";
+    addOIBtn.className = "sub-btn";
+    addOIBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        addOIEntry(null);
+    });
+    oiBody.appendChild(addOIBtn);
 
     // ═══════════════════════════════════════════════════════
     //  ACTION BUTTONS (Save / Cancel) — always visible
@@ -1418,27 +1513,41 @@ function openZoneForm(zone = null) {
         // background
         const background = backgroundSelect.value;
 
-        // Oriented images handler
-        const camParams = camParamsInput.value.trim();
-        const imgParams = imgParamsInput.value.trim();
-        const existingOIH = isEdit ? zone.orientedImagesHandler : null;
-        let oih;
-        if (camParams && imgParams) {
-            const changed = !existingOIH
-                || existingOIH.cameraParamsPath !== camParams
-                || existingOIH.imageParamsPath !== imgParams;
-            if (changed) {
+        // Oriented images handlers (one per image set in the form)
+        const oihs = [];
+        for (const entry of oiEntries) {
+            const setName = entry.setNameInput.value.trim();
+            const camParams = entry.camParamsInput.value.trim();
+            const imgParams = entry.imgParamsInput.value.trim();
+            if (!camParams || !imgParams) continue; // incomplete set => dropped
+
+            const existing = entry.existingHandler;
+            const unchanged = existing
+                && existing.cameraParamsPath === camParams
+                && existing.imageParamsPath === imgParams;
+            if (unchanged) {
+                existing.name = setName; // renaming never needs a reload
+                oihs.push(existing);
+            } else {
                 try {
-                    oih = new orientedImagesHandler(camParams, imgParams);
+                    oihs.push(new orientedImagesHandler(camParams, imgParams, setName));
                 } catch (err) {
                     console.warn("Failed to initialise orientedImagesHandler:", err);
-                    oih = existingOIH || undefined;
+                    if (existing) oihs.push(existing);
                 }
-            } else {
-                oih = existingOIH;
             }
-        } else {
-            oih = undefined; // no (complete) paths => no handler
+        }
+
+        // Take any dropped/replaced handler's images off screen right away —
+        // they may already be in the scene if the zone is currently visible.
+        if (isEdit) {
+            const previous = zone.orientedImagesHandlers
+                || (zone.orientedImagesHandler ? [zone.orientedImagesHandler] : []);
+            for (const old of previous) {
+                if (!oihs.includes(old) && old && old.images) {
+                    setZoneOrientedImagesVisibility(old.images, false);
+                }
+            }
         }
 
         // --- Apply to zone or create new ---
@@ -1451,7 +1560,10 @@ function openZoneForm(zone = null) {
             zone.beacon = beacon;
             zone.background = background;
             zone.isDefault = defaultChk.checked;
-            zone.orientedImagesHandler = oih;
+            zone.orientedImagesHandlers = oihs;
+            delete zone.orientedImagesHandler; // clear legacy single-handler field
+            // New sets start hidden; sync them to the zone's current visibility.
+            resetZoneOrientedImages(zone, getZoneVisibility(zone));
             // annotations, layerMaps, marker360s are already mutated in-place via their arrays
         } else {
             const newZone = new Zone(
@@ -1467,9 +1579,10 @@ function openZoneForm(zone = null) {
                 description,
                 background,
                 defaultChk.checked,
-                oih
+                oihs
             );
             window.zones.push(newZone);
+            resetZoneOrientedImages(newZone, getZoneVisibility(newZone));
         }
 
         console.log("Saved zones:", window.zones);
@@ -1812,6 +1925,8 @@ function buildZoneTree() {
 
 function updateZoneList() {
 
+    updateGlobalOrientedImageToggle();
+
     const roots = buildZoneTree();
 
     const zoneList = document.getElementById("zoneList");
@@ -2026,10 +2141,13 @@ function exportZonesToJSON() {
         beacon: (z.beacon) ? {cameraPosition: z.beacon.cameraPosition, cameraTarget: z.beacon.cameraTarget, position: z.beacon.position} : null,
         background: z.background || 'gradient',
         isDefault: z.isDefault || false,
-        orientedImagesHandler: z.orientedImagesHandler ? {
-            cameraParamsPath: z.orientedImagesHandler.cameraParamsPath,
-            imageParamsPath: z.orientedImagesHandler.imageParamsPath
-        } : null
+        orientedImagesHandlers: (z.orientedImagesHandlers
+            || (z.orientedImagesHandler ? [z.orientedImagesHandler] : [])
+        ).map(h => ({
+            name: h.name || "",
+            cameraParamsPath: h.cameraParamsPath,
+            imageParamsPath: h.imageParamsPath
+        }))
 
     }));
 
@@ -2140,12 +2258,8 @@ function importZonesFromJSON() {
                 }
 
 
-                let orientedHandler;
-                if (z.orientedImagesHandler && z.orientedImagesHandler.cameraParamsPath && z.orientedImagesHandler.imageParamsPath) {
-                    try { orientedHandler = new orientedImagesHandler(z.orientedImagesHandler.cameraParamsPath, z.orientedImagesHandler.imageParamsPath); }
-                    catch (e) { console.warn("orientedImagesHandler failed to load on import:", e); }
-                }
-                return new Zone(z.name, z.parent, Number(z.priority), pcs, boxes, annotations, layerMaps, marker360s, z.beacon || null, z.description || ``, z.background || "gradient", z.isDefault || false, orientedHandler);
+                const orientedHandlers = buildOrientedImagesHandlers(z);
+                return new Zone(z.name, z.parent, Number(z.priority), pcs, boxes, annotations, layerMaps, marker360s, z.beacon || null, z.description || ``, z.background || "gradient", z.isDefault || false, orientedHandlers);
             });
 
             initZonesOps();
@@ -2251,12 +2365,8 @@ async function autoLoadZonesJSON(json) {
                 
                 //temporary system
 
-                let orientedHandler;
-                if (z.orientedImagesHandler && z.orientedImagesHandler.cameraParamsPath && z.orientedImagesHandler.imageParamsPath) {
-                    try { orientedHandler = new orientedImagesHandler(z.orientedImagesHandler.cameraParamsPath, z.orientedImagesHandler.imageParamsPath); }
-                    catch (e) { console.warn("orientedImagesHandler failed to load on import:", e); }
-                }
-                return new Zone(z.name, z.parent, Number(z.priority), pcs, boxes, annotations, layerMaps, marker360s, z.beacon || null, z.description || ``, z.background || "gradient", z.isDefault || false, orientedHandler);
+                const orientedHandlers = buildOrientedImagesHandlers(z);
+                return new Zone(z.name, z.parent, Number(z.priority), pcs, boxes, annotations, layerMaps, marker360s, z.beacon || null, z.description || ``, z.background || "gradient", z.isDefault || false, orientedHandlers);
                 });
                 
 
@@ -2295,6 +2405,13 @@ function initZonesOps () {
     loadBeacons();
     resolveZoneParents();
     enableFirstZone();
+    // One-time startup restore: zone visibility from the URL, or inferred
+    // from the default pointcloud visibility (viewer_state_retainer.js).
+    if (typeof applyZoneVisibilityFromURL === "function") applyZoneVisibilityFromURL();
+    // Oriented images start disabled — zone activation above may have
+    // switched some sets on; mask everything off via the same global
+    // toggle the user would otherwise click.
+    setAllOrientedImagesVisibility(false);
 }
 
 
@@ -2361,23 +2478,45 @@ function _removeZoneVolumes(zone) {
 //  Oriented images (per-zone) visibility
 // ══════════════════════════════════════════════════════════════
 
-// True when the zone has a handler whose images have finished loading.
+// All of a zone's oriented-image handlers (image sets). Also picks up the
+// legacy single-handler field on zones built by old code.
+function _zoneOrientedImageHandlers(zone) {
+    if (!zone) return [];
+    const handlers = zone.orientedImagesHandlers
+        || (zone.orientedImagesHandler ? [zone.orientedImagesHandler] : []);
+    return handlers.filter(h => h);
+}
+
+// All of a zone's oriented-image collections whose images finished loading.
+function _zoneOrientedCollections(zone) {
+    return _zoneOrientedImageHandlers(zone)
+        .map(h => h.images)
+        .filter(c => c && c.images && c.images.length);
+}
+
+// True when the zone has at least one handler whose images have finished loading.
 function zoneHasOrientedImages(zone) {
-    const c = zone && zone.orientedImagesHandler && zone.orientedImagesHandler.images;
-    return !!(c && c.images && c.images.length);
+    return _zoneOrientedCollections(zone).length > 0;
 }
 
-// Per-zone UI preference: are this zone's oriented images allowed on screen?
-// Default true; the search-menu toggle flips zone._orientedImagesHidden.
-function zoneOrientedImagesEnabled(zone) {
-    return !!zone && zone._orientedImagesHidden !== true;
+// Per-set UI preference: is this image set allowed on screen?
+// Default true; the search-menu toggle flips handler._hidden. The global
+// toolbar toggle masks every set while it is off.
+function orientedImageSetEnabled(handler) {
+    if (window.imageMarkersGloballyHidden) return false;
+    return !!handler && handler._hidden !== true;
 }
 
-// Show / hide ONLY this zone's oriented images. Pointclouds, boxes, beacons,
-// annotations and 360 markers are left untouched.
-function setZoneOrientedImagesVisibility(zone, visible) {
-    if (!zoneHasOrientedImages(zone)) return;
-    const collection = zone.orientedImagesHandler.images;
+// Show / hide ONE oriented-image collection of a zone. Pointclouds, boxes,
+// beacons, annotations and 360 markers are left untouched.
+function setZoneOrientedImagesVisibility(collection, visible) {
+    if (!(collection && collection.images && collection.images.length)) return;
+
+    // The global toolbar toggle is a render mask: while it is off nothing may
+    // be shown, no matter which path asks (zone switches, set toggles, load
+    // completion). Per-set _hidden state keeps tracking underneath so the
+    // right sets come back when the mask lifts.
+    if (visible && window.imageMarkersGloballyHidden) visible = false;
 
     if (visible) {
         if (!viewer.scene.orientedImages.includes(collection)) {
@@ -2410,15 +2549,111 @@ function setZoneOrientedImagesVisibility(zone, visible) {
     }
 }
 
-// UI-facing toggle used by the zone-search menu. Flips just the oriented-image
-// visibility for a zone. Independent of whether the zone itself is currently
-// shown or hidden — the images checkbox can always be operated on its own;
-// it's only the zone's own visibility toggle that forces this back in sync
+// UI-facing toggle used by the zone-search menu. Flips just ONE image set's
+// visibility. Independent of whether the zone itself is currently shown or
+// hidden — a set's checkbox can always be operated on its own; it's only the
+// zone's own visibility toggle that forces all sets back in sync
 // (see setZoneVisibility / _enableZone / _disableZone).
-function toggleZoneOrientedImages(zone, visible) {
-    if (!zone) return;
-    zone._orientedImagesHidden = !visible;
-    setZoneOrientedImagesVisibility(zone, visible);
+function toggleOrientedImageSet(handler, visible) {
+    if (!handler) return;
+
+    // Enabling one set while the global toggle is off: lift the global mask
+    // but switch every other set off, so exactly this set becomes visible.
+    if (visible && window.imageMarkersGloballyHidden) {
+        window.imageMarkersGloballyHidden = false;
+        for (const z of window.zones || []) {
+            for (const h of _zoneOrientedImageHandlers(z)) {
+                if (h === handler) continue;
+                h._hidden = true;
+                if (h.images) setZoneOrientedImagesVisibility(h.images, false);
+            }
+        }
+        _syncGlobalOIBubble();
+    }
+
+    handler._hidden = !visible;
+    if (handler.images) setZoneOrientedImagesVisibility(handler.images, visible);
+    refreshZoneCheckboxStates();
+}
+
+// Force ALL of a zone's image sets to `visible`, clearing any per-set manual
+// override. Used when the zone itself is switched on/off. While the global
+// toggle is off, _hidden still tracks the intended state; the render mask in
+// setZoneOrientedImagesVisibility keeps everything off screen.
+function resetZoneOrientedImages(zone, visible) {
+    for (const handler of _zoneOrientedImageHandlers(zone)) {
+        handler._hidden = !visible;
+        if (handler.images) setZoneOrientedImagesVisibility(handler.images, visible);
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  Global oriented-image toggle (inline toolbar button, between
+//  Material and Zones — markup lives in index.html as
+//  #oiToggleSection/#oiToggleSeparator/#globalOIToggle)
+// ══════════════════════════════════════════════════════════════
+
+window.imageMarkersGloballyHidden = false;
+
+// Master switch for every image set and 360 marker of every zone.
+// Turning it ON is a genuine "force everything on", not just lifting a mask
+// over whatever state zone activation happened to leave behind — a set
+// whose owning zone was never actually entered via _enableZone (e.g. the
+// scene's starting zone, which the startup URL/pointcloud-visibility
+// inference in applyZoneVisibilityFromURL() can mark "visible" without ever
+// calling _enableZone) would otherwise be stuck on its constructor default
+// of _hidden = true forever, no matter how many times the button is pressed.
+// Turning it OFF is still just a mask: per-set/per-zone state is left alone
+// so zone switches keep tracking it underneath while everything is hidden.
+function setAllOrientedImagesVisibility(visible) {
+    window.imageMarkersGloballyHidden = !visible;
+
+    for (const z of window.zones || []) {
+        for (const h of _zoneOrientedImageHandlers(z)) {
+            if (visible) h._hidden = false;
+            if (!h.images) continue;
+            setZoneOrientedImagesVisibility(h.images, visible);
+        }
+        if (z.marker360s && z.marker360s.length) {
+            if (visible) z._marker360sVisible = true;
+            _applyMarker360sVisibility(z, visible);
+        }
+    }
+    _syncGlobalOIBubble();
+    refreshZoneCheckboxStates();
+}
+
+// Mirror the global flag onto the button's visual state.
+function _syncGlobalOIBubble() {
+    const btn = document.getElementById("globalOIToggle");
+    if (btn) btn.classList.toggle("oi-off", window.imageMarkersGloballyHidden === true);
+}
+
+// Keep the toolbar button in sync with the zone data: shown only when at
+// least one zone defines an image set or a 360 marker. Called from
+// updateZoneList(), which runs on zone import, save and delete.
+function updateGlobalOrientedImageToggle() {
+    const section = document.getElementById("oiToggleSection");
+    const separator = document.getElementById("oiToggleSeparator");
+    const btn = document.getElementById("globalOIToggle");
+    if (!section || !separator || !btn) return;
+
+    const hasAny = (window.zones || []).some(z =>
+        _zoneOrientedImageHandlers(z).length > 0 ||
+        (Array.isArray(z.marker360s) && z.marker360s.length > 0)
+    );
+
+    section.style.display = hasAny ? "" : "none";
+    separator.style.display = hasAny ? "" : "none";
+
+    if (!btn.dataset.wired) {
+        btn.dataset.wired = "1";
+        btn.addEventListener("click", () => {
+            setAllOrientedImagesVisibility(window.imageMarkersGloballyHidden === true);
+        });
+    }
+
+    _syncGlobalOIBubble();
 }
 
 function _enableZone(zone) {
@@ -2430,8 +2665,7 @@ function _enableZone(zone) {
     setBeaconVisibilitybyZone(zone, true);
     // Oriented images are linked to zone visibility: turning the zone on
     // always brings its images along, resetting any prior manual override.
-    zone._orientedImagesHidden = false;
-    setZoneOrientedImagesVisibility(zone, true);
+    resetZoneOrientedImages(zone, true);
 
     const defaultChild = getDefaultChild(zone);
     if(defaultChild) {
@@ -2453,8 +2687,7 @@ function _disableZone(zone) {
     setBeaconVisibilitybyZone(zone, false);
     // Oriented images are linked to zone visibility: turning the zone off
     // always takes its images with it, resetting any prior manual override.
-    zone._orientedImagesHidden = true;
-    setZoneOrientedImagesVisibility(zone, false);
+    resetZoneOrientedImages(zone, false);
 
 
     const defaultChild = getDefaultChild(zone);
@@ -2617,6 +2850,13 @@ window.toggleAutoPointCloudSwitching = function (enabled) {
         viewer.setClipTask(2);
     }
 };
+
+function moveCameraToPC(pointcloud){
+    let box = viewer.getBoundingBox([pointcloud]);
+    let node = new THREE.Object3D();
+    node.boundingBox = box;
+    viewer.zoomTo(node, 1, 500);
+}
 
 function moveCameraToClose360(cameraPosition, cameraTarget) {
     

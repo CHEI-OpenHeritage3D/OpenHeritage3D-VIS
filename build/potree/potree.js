@@ -77916,7 +77916,10 @@ ENDSEC
 				if(orientedImageControls.hasSomethingCaptured()){
 					return;
 				}
-				if(hoveredElement){
+				// hoveredElement can be stale if the images were hidden since
+				// the last mousemove over the canvas; hidden oriented-image
+				// meshes are flagged by layers.mask = 0, so never open those.
+				if(hoveredElement && hoveredElement.mesh && hoveredElement.mesh.layers.mask !== 0){
 					focusImage(hoveredElement);
 				}
 			};
