@@ -1625,21 +1625,29 @@ function importEditsFromCSV(filePath) {
         return;
     }
 
-    // File picker fallback
+    // File picker fallback — supports selecting multiple CSVs at once,
+    // read and parsed one at a time in selection order.
     let input = document.createElement("input");
     input.type = "file";
     input.accept = ".csv";
-    input.addEventListener("change", (e) => {
-        let file = e.target.files[0];
-        if (!file) return;
-
-        let reader = new FileReader();
-        reader.onload = function (evt) {
-            parseEditsCSV(evt.target.result);
-        };
-        reader.readAsText(file);
+    input.multiple = true;
+    input.addEventListener("change", async (e) => {
+        const files = Array.from(e.target.files);
+        for (const file of files) {
+            const text = await readFileAsText(file);
+            parseEditsCSV(text);
+        }
     });
     input.click();
+}
+
+function readFileAsText(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (evt) => resolve(evt.target.result);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsText(file);
+    });
 }
 
 /**
