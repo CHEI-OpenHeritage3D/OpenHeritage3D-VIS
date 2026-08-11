@@ -189,6 +189,7 @@ style.textContent += `
     transition: background 0.12s, box-shadow 0.12s, border-color 0.12s;
 }
 .zs-ann-item:hover { background: rgba(79,70,229,0.45); border-color: rgba(79,70,229,0.5); box-shadow: 0 0 10px rgba(79,70,229,0.4); }
+.zs-ann-item.viewing { background: rgba(79,70,229,0.6); border-color: rgba(111,107,255,0.9); box-shadow: 0 0 12px rgba(79,70,229,0.6); }
 .zs-ann-item::before { content: ""; position: absolute; left: -18px; top: 50%; width: 16px; height: 2px; background: rgba(255,255,255,0.15); transform: translateY(-50%); }
 
 .zs-ann-icon { width: 18px; height: 18px; object-fit: contain; filter: brightness(1.8) drop-shadow(0 0 2px rgba(0,0,0,0.8)); flex-shrink: 0; margin-top: 1px; }
@@ -674,10 +675,19 @@ function _renderSearchNode(zone, container, depth) {
     nameBtn.dataset.zoneName = zone.name;
     if (window._isolatedZone === zone) nameBtn.classList.add("isolated");
     if(zone.pointclouds.length != 0){   // normal zone
-        nameBtn.addEventListener("click", () => zoneOnlyToggleMoveCamera(zone));  
+        nameBtn.addEventListener("click", () => zoneOnlyToggleMoveCamera(zone));
     }
-    else if(zone.pointclouds.length == 0 && zone.beacon){
-        nameBtn.addEventListener("click", () => zoneOnlyToggle(zone));
+    else {
+        // Empty zone (no pointclouds): clicking the name expands its children
+        // in the tree. Delegate to the chevron so its bookkeeping
+        // (_expandedSearch/_collapsedSearch) stays consistent.
+        nameBtn.addEventListener("click", () => {
+            const chev = node.querySelector(":scope > .zs-zone-row > .zs-chevron");
+            if (chev && chev.classList.contains("collapsed")) chev.click();
+        });
+        if (zone.beacon) {
+            nameBtn.addEventListener("click", () => zoneOnlyToggle(zone));
+        }
     }
     row.appendChild(nameBtn);
 
@@ -701,9 +711,18 @@ function _renderSearchNode(zone, container, depth) {
     inspectBtn.appendChild(_sMagnify());
     inspectBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        inspectZone(zone);
+        if(zone.beacon?.cameraPosition && zone.beacon?.cameraTarget){
+            inspectZone(zone);
+        }
+        else {  // no manually defined beacon or camera position
+            let box = viewer.getBoundingBox([zone.pointclouds[0]]);
+            let node = new THREE.Object3D();
+            node.boundingBox = box;
+            viewer.zoomTo(node, 1, 500);
+        }
+        
     });
-    if(zone.beacon?.cameraPosition && zone.beacon?.cameraTarget) row.appendChild(inspectBtn);
+    if((zone.beacon?.cameraPosition && zone.beacon?.cameraTarget) || zone.pointclouds.length != 0) row.appendChild(inspectBtn);
 
 // Description button – opens a draggable floating window
     const descBtn = document.createElement("button");
@@ -744,7 +763,13 @@ function _renderSearchNode(zone, container, depth) {
         const annWrap = document.createElement("div"); annWrap.className = "zs-ann-wrap"; annWrap.style.marginLeft = `${10 + depth * 4}px`;
         if (zone.annotations) for (const ann of zone.annotations) annWrap.appendChild(_createAnnItem(ann, "annotation"));
         if (zone.marker360s) for (const mk of zone.marker360s) annWrap.appendChild(_createAnnItem(mk, "marker360"));
-        if (hasOrientedImages) annWrap.appendChild(_createOrientedImageGroup(zone));
+        if (hasOrientedImages) {
+            _zoneOrientedImageHandlers(zone).forEach((handler, i) => {
+                if (handler.images && handler.images.images && handler.images.images.length) {
+                    annWrap.appendChild(_createOrientedImageGroup(handler, i));
+                }
+            });
+        }
         annContainer.appendChild(annWrap);
         if (!isCollapsed) requestAnimationFrame(() => { annContainer.style.maxHeight = annContainer.scrollHeight + "px"; });
         node.appendChild(annContainer);
@@ -778,16 +803,18 @@ function _createAnnItem(ref, type) {
         item.title = ref.name || "360 Image";
         const icon = document.createElement("img"); icon.src = annotationIcons["marker360"]; icon.className = "zs-ann-icon"; item.appendChild(icon);
         const t = document.createElement("span"); t.className = "zs-ann-title"; t.textContent = ref.name || "360 Marker"; item.appendChild(t);
+        if (window.viewing360Marker === ref) item.classList.add("viewing");
         item.addEventListener("click", () => { if (window.open360 && ref._sphereMarker) window.open360(ref._sphereMarker); });
     }
     return item;
 }
 
-// Build a collapsible-friendly group of a zone's oriented images. A master
-// checkbox toggles the visibility of ALL of the zone's oriented images without
-// affecting the rest of the zone; each image row opens that photo when clicked.
-function _createOrientedImageGroup(zone) {
-    const collection = zone.orientedImagesHandler.images;
+// Build a collapsible-friendly group for ONE of a zone's oriented-image sets.
+// Each set gets its own box: a master checkbox toggles the visibility of just
+// this set without affecting the rest of the zone; each image row opens that
+// photo when clicked.
+function _createOrientedImageGroup(handler, index) {
+    const collection = handler.images;
     const imgs = (collection && collection.images) ? collection.images : [];
 
     const group = document.createElement("div");
@@ -805,12 +832,12 @@ function _createOrientedImageGroup(zone) {
     const chk = document.createElement("input");
     chk.type = "checkbox";
     chk.className = "zs-checkbox zs-oi-toggle";
-    chk.checked = zoneOrientedImagesEnabled(zone);
-    chk.title = "Show/hide all oriented images for this zone";
-    chk.zone = zone;
+    chk.checked = orientedImageSetEnabled(handler);
+    chk.title = "Show/hide this set of oriented images";
+    chk.oiHandler = handler;
     window.zoneOICheckboxes.push(chk);
     chk.addEventListener("click", (e) => e.stopPropagation());   // don't collapse
-    chk.addEventListener("change", () => toggleZoneOrientedImages(zone, chk.checked));
+    chk.addEventListener("change", () => toggleOrientedImageSet(handler, chk.checked));
     header.appendChild(chk);
 
     const hIcon = document.createElement("img");
@@ -820,7 +847,7 @@ function _createOrientedImageGroup(zone) {
 
     const hLabel = document.createElement("span");
     hLabel.className = "zs-oi-label";
-    hLabel.textContent = `Oriented Images (${imgs.length})`;
+    hLabel.textContent = `${handler.name || `Oriented Images ${index + 1}`} (${imgs.length})`;
     header.appendChild(hLabel);
 
     group.appendChild(header);
@@ -845,14 +872,16 @@ function _createOrientedImageGroup(zone) {
         t.textContent = image.id || "Image";
         item.appendChild(t);
 
+        if (window.orientedImageState && window.orientedImageState.currentImage === image) {
+            item.classList.add("viewing");
+        }
+
         item.addEventListener("click", () => {
-            const c = zone.orientedImagesHandler && zone.orientedImagesHandler.images;
-            if (!c) return;
-            // Make sure the collection is on screen before focusing the photo.
-            zone._orientedImagesHidden = false;
+            if (!collection) return;
+            // Make sure this set is on screen before focusing the photo.
             chk.checked = true;
-            setZoneOrientedImagesVisibility(zone, true);
-            if (typeof c.focusImage === "function") c.focusImage(image);
+            toggleOrientedImageSet(handler, true);
+            if (typeof collection.focusImage === "function") collection.focusImage(image);
         });
 
         itemsWrap.appendChild(item);
@@ -919,9 +948,8 @@ function setZoneVisibility(zone, visibility) {
         setMarker360sVisibilityByZone(zone, false);
         setBeaconVisibilitybyZone(zone, false);
         // Oriented images follow the zone toggle: turning the zone off
-        // always hides its images too, resetting any manual override.
-        zone._orientedImagesHidden = true;
-        setZoneOrientedImagesVisibility(zone, false);
+        // always hides its images too, resetting any per-set manual override.
+        resetZoneOrientedImages(zone, false);
 
         newVisibleZones.delete(zone);
     }
@@ -966,9 +994,8 @@ function setZoneVisibility(zone, visibility) {
         setMarker360sVisibilityByZone(zone, true);
         setBeaconVisibilitybyZone(zone, true);
         // Oriented images follow the zone toggle: turning the zone on
-        // always shows its images too, resetting any manual override.
-        zone._orientedImagesHidden = false;
-        setZoneOrientedImagesVisibility(zone, true);
+        // always shows its images too, resetting any per-set manual override.
+        resetZoneOrientedImages(zone, true);
         newVisibleZones.add(zone);
     }
 
@@ -1014,7 +1041,14 @@ function zoneOnlyToggle(zoneToShow) {
     viewer.setClipTask(2);
 
     if (window._isolatedZone === zoneToShow) {
-        moveCameraToClose360(zoneToShow.beacon.cameraPosition, zoneToShow.beacon.cameraTarget);
+        if(!zoneToShow.beacon?.cameraPosition || !zoneToShow.beacon?.cameraTarget) {
+            if (window.in360View) window.close360();
+            moveCameraToPC(zoneToShow.pointclouds[0]);
+        }
+        else {
+            moveCameraToClose360(zoneToShow.beacon.cameraPosition, zoneToShow.beacon.cameraTarget);
+        }
+        
     } else {
         window._isolatedZone = zoneToShow;
         for (const zone of window.zones) setZoneVisibility(zone, zone === zoneToShow);
@@ -1032,7 +1066,13 @@ function zoneOnlyToggleMoveCamera(zoneToShow) {
     if (window._isolatedZone === zoneToShow) {
         // Already isolated on this zone → show ALL zones
 
-        moveCameraToClose360(zoneToShow.beacon.cameraPosition, zoneToShow.beacon.cameraTarget);
+        if(!zoneToShow.beacon?.cameraPosition || !zoneToShow.beacon?.cameraTarget) {
+            if (window.in360View) window.close360();
+            moveCameraToPC(zoneToShow.pointclouds[0]);
+        }
+        else {
+            moveCameraToClose360(zoneToShow.beacon.cameraPosition, zoneToShow.beacon.cameraTarget);
+        }
         // window._isolatedZone = null;
         // for (const zone of window.zones) setZoneVisibility(zone, true);
     } else {
@@ -1079,19 +1119,49 @@ function refreshZoneCheckboxStates() {
         const zone = chk.zone; if (!zone) continue;
         chk.checked = getZoneVisibility(zone);
     }
-    // Keep each zone's "Oriented Images" master checkbox in sync with the
-    // zone's own visibility toggle (they're linked: switching the zone
-    // forces the images checkbox to follow). Users can still flip the
-    // images checkbox on its own afterwards without touching the zone.
+    // Keep each image set's checkbox in sync with its handler's state
+    // (switching a zone forces all of its sets to follow). Users can still
+    // flip a set's checkbox on its own afterwards without touching the zone.
     for (const chk of window.zoneOICheckboxes) {
-        const zone = chk.zone; if (!zone) continue;
-        chk.checked = zoneOrientedImagesEnabled(zone);
+        const handler = chk.oiHandler; if (!handler) continue;
+        chk.checked = orientedImageSetEnabled(handler);
     }
 }
+
+// ══════════════════════════════════════════════════════════════
+//  Currently-viewing highlight (oriented image / 360 marker)
+// ══════════════════════════════════════════════════════════════
+
+// Highlight the rows whose _ref is the oriented image currently focused or
+// the 360 marker currently open. `currentOIOverride` lets viewer-event
+// callers pass the image from the event itself — this script's listeners run
+// before oriented_image_panel.js updates orientedImageState, so reading the
+// global there would lag one event behind.
+function refreshViewingHighlights(currentOIOverride) {
+    const currentOI = (currentOIOverride !== undefined)
+        ? currentOIOverride
+        : (window.orientedImageState ? window.orientedImageState.currentImage : null);
+    const current360 = window.viewing360Marker || null;
+
+    document.querySelectorAll("#zoneSearchMenu .zs-ann-item").forEach(item => {
+        const ref = item._ref;
+        item.classList.toggle("viewing", !!ref && (ref === currentOI || ref === current360));
+    });
+}
+
+viewer.addEventListener("oriented_image_captured", (e) => refreshViewingHighlights(e.image));
+viewer.addEventListener("oriented_image_changed", (e) => refreshViewingHighlights(e.image));
+viewer.addEventListener("oriented_image_released", () => refreshViewingHighlights(null));
+document.addEventListener("viewing-360-changed", () => refreshViewingHighlights());
 
 function repositionDescriptionWindow(){
     const existing = document.getElementById("zoneDescWindow");
     if(!existing) return;
+
+    // Managed by panel_window_manager (wrapped in a .pwm-frame): placement is
+    // the manager's job, and inline right/left here would shift the panel
+    // around inside its frame instead of moving the window.
+    if (existing.dataset.pwm) return;
 
     if(document.getElementById("zoneSearchMenu")){
         existing.style.right = '440px';
@@ -1186,7 +1256,10 @@ function openDescriptionWindow(zone) {
 
     const win = document.createElement("div");
     win.id = "zoneDescWindow";
-    win.className = "zs-desc-window";
+    // "open" is for panel_window_manager: managed frames mirror the panel's
+    // .open class for their fade-in. No .zs-desc-window.open CSS rule exists,
+    // so it is inert when the manager isn't loaded.
+    win.className = "zs-desc-window open";
 
     // ── Titlebar (draggable handle) ──
     const titlebar = document.createElement("div");

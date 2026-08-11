@@ -38,6 +38,9 @@ function createZones(){
         window.zones.push(zone);
     }
     enableFirstZone();
+    // One-time startup restore: zone visibility from the URL, or inferred
+    // from the default pointcloud visibility (viewer_state_retainer.js).
+    if (typeof applyZoneVisibilityFromURL === "function") applyZoneVisibilityFromURL();
 }
 
 async function initZones() {

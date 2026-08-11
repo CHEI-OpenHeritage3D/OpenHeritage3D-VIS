@@ -676,6 +676,38 @@ style.textContent += `
     -webkit-appearance: none;
     margin: 0;
 }
+
+/* ── Nearest Oriented Image Tooltip (hold Shift) ────────── */
+
+.brush-oi-tooltip {
+    position: fixed;
+    z-index: 10002;
+    pointer-events: none;
+    padding: 6px 10px;
+    background: rgba(20, 20, 26, 0.88);
+    backdrop-filter: blur(8px) saturate(140%);
+    -webkit-backdrop-filter: blur(8px) saturate(140%);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 8px;
+    box-shadow: 0 0 16px rgba(0,0,0,0.45);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    color: #fafafa;
+    font-size: 13px;
+    white-space: nowrap;
+    display: none;
+}
+
+.brush-oi-tooltip-name {
+    font-weight: 600;
+    color: #c4c0ff;
+}
+
+.brush-oi-tooltip-hint {
+    display: block;
+    margin-top: 2px;
+    font-size: 11px;
+    color: #888;
+}
 `;
 
 // ══════════════════════════════════════════════════════════════
@@ -765,7 +797,7 @@ function setPCMaterial(material) {
     else if(material.toLowerCase() === "rgba classes"){
         for (const pointcloud of viewer.scene.pointclouds){
             pointcloud.material.activeAttributeName = "composite";
-            pointcloud.material.weightRGBA = [1];
+            pointcloud.material.weightRGB = [1];
             pointcloud.material.weightIntensity = [0];
             pointcloud.material.intensityRange = [16, 65000];
             pointcloud.material.weightClassification = [0.75];
@@ -775,7 +807,7 @@ function setPCMaterial(material) {
     else if(material.toLowerCase() === 'intensity classes'){
         for (const pointcloud of viewer.scene.pointclouds){
             pointcloud.material.activeAttributeName = "composite";
-            pointcloud.material.weightRGBA = [0];
+            pointcloud.material.weightRGB = [0];
             pointcloud.material.weightIntensity = [90];
             pointcloud.material.intensityRange = [16, 65000];
             pointcloud.material.weightClassification = [10];
@@ -809,6 +841,80 @@ function switchPCMaterial() {
     else if(currentMaterial === 'intensity'){
         setPCMaterial("intensity classes");
     }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  RGB ↔ Classification Composite Blend
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * Push window.brushState.classBlend into the composite weights of every
+ * currently visible pointcloud. t=0 is pure RGB, t=1 is pure classification;
+ * the other composite channels are zeroed so the two stay complementary.
+ */
+function applyClassBlendToVisiblePointclouds() {
+    const t = window.brushState.classBlend;
+    for (const pc of viewer.scene.pointclouds) {
+        if (!pc.visible) continue;
+        pc.material.activeAttributeName = "composite";
+        pc.material.weightRGB = 1 - t;
+        pc.material.weightClassification = t;
+        pc.material.weightIntensity = 0;
+        pc.material.weightElevation = 0;
+        pc.material.weightReturnNumber = 0;
+        pc.material.weightSourceID = 0;
+    }
+}
+
+function updateClassBlendUI() {
+    const t = window.brushState.classBlend;
+    const slider = document.getElementById("brushClassBlendSlider");
+    const value  = document.getElementById("brushClassBlendValue");
+    if (slider) slider.value = String(t);
+    if (value)  value.textContent = Math.round(t * 100) + "% Class";
+}
+
+function setClassBlend(t) {
+    t = Math.min(1, Math.max(0, t));
+    window.brushState.classBlend = t;
+    applyClassBlendToVisiblePointclouds();
+    updateClassBlendUI();
+}
+
+// Cycles the blend 100% RGB -> 50/50 -> 100% Classification -> 50/50 -> ... (hotkey W)
+function toggleClassBlendCycle() {
+    const t = window.brushState.classBlend;
+    let next;
+    if (t > 0.5) {
+        next = 0.5;
+        window.brushState.classBlendToggleDir = -1; // next stop is 100% RGB
+    } else if (t < 0.5) {
+        next = 0.5;
+        window.brushState.classBlendToggleDir = 1;  // next stop is 100% classification
+    } else {
+        next = window.brushState.classBlendToggleDir < 0 ? 0 : 1;
+    }
+    setClassBlend(next);
+}
+
+// Called by oriented_image_panel.js when a photo is focused — that flow pins
+// pointclouds to pure classification color, so pin the bar at 100% too and
+// remember where it was so it can be restored on release.
+function enterClassBlendForOrientedImage() {
+    if (!window.brushState._blendForcedByOI) {
+        window.brushState._classBlendBeforeOI = window.brushState.classBlend;
+        window.brushState._blendForcedByOI = true;
+    }
+    window.brushState.classBlend = 1;
+    updateClassBlendUI();
+}
+
+// Called when a focused photo is released — restores whatever blend was
+// active before oriented-image mode forced it to 100% classification.
+function exitClassBlendForOrientedImage() {
+    if (!window.brushState._blendForcedByOI) return;
+    window.brushState._blendForcedByOI = false;
+    setClassBlend(window.brushState._classBlendBeforeOI || 0);
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -892,6 +998,7 @@ function rebuildClassificationGridUI() {
             grid.querySelectorAll(".brush-class-btn").forEach(b => b.classList.remove("active"));
             btn.classList.add("active");
             window.brushState.classification = cls.value;
+            updateBrushSphereColor();
         });
 
         grid.appendChild(btn);
@@ -903,6 +1010,8 @@ function rebuildClassificationGridUI() {
         const first = grid.querySelector(".brush-class-btn");
         if (first) first.classList.add("active");
     }
+
+    updateBrushSphereColor();
 }
 
 
@@ -1742,7 +1851,12 @@ window.brushState = {
     targetPointcloud: null,
     sphere: null,
     painting: false,
-    strokeInProgress: false
+    strokeInProgress: false,
+    classBlend: 0,             // composite blend: 0 = 100% RGB, 1 = 100% classification
+    classBlendToggleDir: 1,    // -1 = W cycle heading toward 0 (RGB), 1 = heading toward 1 (classification)
+    _blendForcedByOI: false,   // true while oriented-image mode has pinned the blend to 100%
+    _classBlendBeforeOI: 0,    // blend value to restore once oriented-image mode releases
+    _globalOIForcedByShiftClick: false  // true if Shift+click switched the global OI toggle on itself
 };
 
 
@@ -2610,6 +2724,7 @@ function createTileLabel(text, sub) {
 function getSubVolumeLink(sub) {
     sub.clip = true;
     sub.visible = false;
+    sub.clipTask = 2;
     const vol = serializeVolumeToCompressedString(sub);
 
     const url = new URL(window.location);
@@ -3137,6 +3252,7 @@ function openBrushPanel() {
             grid.querySelectorAll(".brush-class-btn").forEach(b => b.classList.remove("active"));
             btn.classList.add("active");
             window.brushState.classification = cls.value;
+            updateBrushSphereColor();
         });
 
         grid.appendChild(btn);
@@ -3209,6 +3325,41 @@ function openBrushPanel() {
     sliderRow.appendChild(sliderUnit);
     radiusSection.appendChild(sliderRow);
     panel.appendChild(radiusSection);
+
+    // ── RGB / Classification Blend ──
+    const blendSection = document.createElement("div");
+
+    const blendLabel = document.createElement("div");
+    blendLabel.className = "brush-label";
+    blendLabel.innerHTML = 'RGB / Classification Blend <span class="brush-hotkey">W</span>';
+    blendSection.appendChild(blendLabel);
+
+    const blendSliderRow = document.createElement("div");
+    blendSliderRow.className = "brush-slider-row";
+
+    const blendSlider = document.createElement("input");
+    blendSlider.type = "range";
+    blendSlider.id = "brushClassBlendSlider";
+    blendSlider.className = "brush-slider";
+    blendSlider.min = "0";
+    blendSlider.max = "1";
+    blendSlider.step = "0.01";
+    blendSlider.value = String(window.brushState.classBlend);
+    blendSlider.title = "Blend RGB color with classification color, across all currently visible point clouds";
+    blendSlider.addEventListener("input", () => setClassBlend(parseFloat(blendSlider.value)));
+    blendSliderRow.appendChild(blendSlider);
+
+    const blendValue = document.createElement("span");
+    blendValue.className = "brush-slider-value";
+    blendValue.id = "brushClassBlendValue";
+    blendValue.textContent = Math.round(window.brushState.classBlend * 100) + "% Class";
+    blendValue.title = "Cycle blend: 100% RGB / 50-50 / 100% Classification (W)";
+    blendValue.style.cursor = "pointer";
+    blendValue.addEventListener("click", () => toggleClassBlendCycle());
+    blendSliderRow.appendChild(blendValue);
+
+    blendSection.appendChild(blendSliderRow);
+    panel.appendChild(blendSection);
 
     // ── Divider ──
     const divider = document.createElement("div");
@@ -3402,6 +3553,26 @@ function initBrushSphere() {
     sphere.visible = false;
     viewer.scene.scene.add(sphere);
     window.brushState.sphere = sphere;
+    window.brushState.sphereWireframe = wireframe;
+    updateBrushSphereColor();
+}
+
+/**
+ * Sync the brush sphere's color with the currently selected classification.
+ * Called whenever window.brushState.classification changes, or a
+ * classification's color is edited.
+ */
+function updateBrushSphereColor() {
+    const sphere = window.brushState.sphere;
+    if (!sphere) return;
+
+    const cls = CLASSIFICATIONS.find(c => c.value === window.brushState.classification);
+    const color = cls ? cls.color : '#ffff00';
+
+    sphere.material.color.set(color);
+    if (window.brushState.sphereWireframe) {
+        window.brushState.sphereWireframe.material.color.set(color);
+    }
 }
 
 function updateRadiusUI() {
@@ -3430,6 +3601,152 @@ function scaleBrushByZoom () {
     brushState.radius = r;
     brushState.sphere.scale.set(r, r, r);
 }
+
+
+// ══════════════════════════════════════════════════════════════
+//  Shift → Nearest Oriented Image
+//
+//  Holding Shift shows a tooltip naming whichever oriented image is
+//  closest to the brush's current position; Shift+click jumps into that
+//  image's view. Works even when the image (or its whole zone) is
+//  currently hidden — OrientedImageLoader builds every image's mesh and
+//  real-world .position up front regardless of visibility, only the mesh's
+//  own visible flag is toggled by hide/show — so position data is there
+//  to search even for sets nobody has switched on.
+// ══════════════════════════════════════════════════════════════
+
+let _oiTooltipEl   = null;
+let _oiLookupList  = null;  // [{image, collection}], rebuilt each time Shift is pressed
+let _oiNearestHit  = null;  // {image, collection, distance} for the current hover, or null
+
+function initOrientedImageTooltip() {
+    _oiTooltipEl = document.createElement("div");
+    _oiTooltipEl.className = "brush-oi-tooltip";
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "brush-oi-tooltip-name";
+    _oiTooltipEl.appendChild(nameEl);
+
+    const hintEl = document.createElement("span");
+    hintEl.className = "brush-oi-tooltip-hint";
+    hintEl.textContent = "Shift+click to view";
+    _oiTooltipEl.appendChild(hintEl);
+
+    document.body.appendChild(_oiTooltipEl);
+}
+
+// Flat snapshot of every oriented image whose set has finished loading, across
+// every zone (visible or not). Scenes only ever carry a few hundred oriented
+// images at most (one mesh+line per image, no batching/LOD in OrientedImages),
+// so a plain array + linear scan on each hover tick is cheap — comfortably
+// sub-millisecond — and needs no invalidation bookkeeping. A spatial index
+// would only pay for itself at image counts this codebase never reaches.
+function collectOrientedImageEntries() {
+    const entries = [];
+    for (const zone of window.zones || []) {
+        for (const handler of _zoneOrientedImageHandlers(zone)) {
+            const collection = handler.images;
+            if (!collection || !Array.isArray(collection.images)) continue;
+            for (const image of collection.images) {
+                entries.push({ image, collection });
+            }
+        }
+    }
+    return entries;
+}
+
+function findNearestOrientedImage(position) {
+    if (!_oiLookupList || _oiLookupList.length === 0) return null;
+
+    let best = null;
+    let bestDistSq = Infinity;
+    for (const entry of _oiLookupList) {
+        const d = position.distanceToSquared(entry.image.position);
+        if (d < bestDistSq) {
+            bestDistSq = d;
+            best = entry;
+        }
+    }
+    return best ? { image: best.image, collection: best.collection, distance: Math.sqrt(bestDistSq) } : null;
+}
+
+function showOrientedImageTooltip(clientX, clientY, hit) {
+    if (!_oiTooltipEl) return;
+    _oiTooltipEl.querySelector(".brush-oi-tooltip-name").textContent =
+        `${hit.image.id} — ${hit.distance.toFixed(1)}m`;
+    _oiTooltipEl.style.left = (clientX + 16) + "px";
+    _oiTooltipEl.style.top  = (clientY + 16) + "px";
+    _oiTooltipEl.style.display = "block";
+}
+
+function hideOrientedImageTooltip() {
+    _oiNearestHit = null;
+    if (_oiTooltipEl) _oiTooltipEl.style.display = "none";
+}
+
+// Called from the brush's mousemove pick loop whenever Shift is held and the
+// brush sphere has a valid position to compare against.
+function updateOrientedImageHover(clientX, clientY) {
+    if (!brushState.sphere || !brushState.sphere.visible) {
+        hideOrientedImageTooltip();
+        return;
+    }
+    const hit = findNearestOrientedImage(brushState.sphere.position);
+    if (!hit) {
+        hideOrientedImageTooltip();
+        return;
+    }
+    _oiNearestHit = hit;
+    showOrientedImageTooltip(clientX, clientY, hit);
+}
+
+// Shift+click — jump into whatever image the tooltip is currently naming.
+// focusImage() alone isn't enough when images are globally hidden: hiding
+// also zeroes each mesh's render layer (zone_creation.js's
+// setZoneOrientedImagesVisibility), and focusImage() never touches that, so
+// the focused photo would stay invisible even though it's "selected". Flip
+// the same global toggle the toolbar button uses, but only remember to undo
+// it on release if WE were the one who flipped it — if the user had already
+// turned images on manually, leave that alone.
+function focusNearestOrientedImage() {
+    if (!_oiNearestHit) return;
+
+    if (window.imageMarkersGloballyHidden) {
+        setAllOrientedImagesVisibility(true);
+        window.brushState._globalOIForcedByShiftClick = true;
+    }
+
+    _oiNearestHit.collection.focusImage(_oiNearestHit.image);
+    hideOrientedImageTooltip();
+}
+
+
+// ══════════════════════════════════════════════════════════════
+//  Ctrl+Scroll Brush Radius (paint mode only)
+//
+//  Earlier version of this feature unregistered viewer.controls from
+//  viewer.inputHandler for the duration of the Ctrl-hold, to keep it from
+//  reacting to the same scroll. That's a *stateful* trick — it depends on
+//  every detach eventually being paired with a reattach — and in practice
+//  it left the camera's zoom/pan/rotate permanently dead. Never again:
+//  this version never removes anything from the input pipeline.
+//
+//  Instead it listens on the exact same event Potree's own controls do
+//  ('mousewheel' — the legacy event InputHandler still uses, not the
+//  standard 'wheel'), registered on the same element. DOM listeners on one
+//  element+event fire in registration order, and Potree's own listener was
+//  registered at viewer construction time, long before this script runs —
+//  so by the time this handler runs, Potree's controls have *already*
+//  synchronously applied this tick's zoom delta. We simply zero that delta
+//  back out before their next render-loop update() consumes it, then apply
+//  our own radius change. If this handler is ever skipped or throws, the
+//  worst case is a normal Potree zoom happens alongside/instead of a brush
+//  resize — never a stuck, unrecoverable camera.
+// ══════════════════════════════════════════════════════════════
+
+// brushState.painting is only ever true between a Control keydown and its
+// matching keyup (see the keydown/keyup handlers below) — i.e. exactly
+// "Ctrl is currently held". That's the one condition this feature gates on.
 
 
 // ══════════════════════════════════════════════════════════════
@@ -3491,14 +3808,24 @@ function applyEditsOnMove(){
 
 document.addEventListener("DOMContentLoaded", () => {
     initBrushSphere();
+    initOrientedImageTooltip();
     setTimeout(ensureTileLabels, 500);
     // viewer.addEventListener('camera_changed', applyEditsOnMove);
+
+    let _shiftHeld = false;
+
     document.addEventListener('keydown', (e) => {
         if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
 
         if (e.key === 'Control' && brushState.active) {
             brushState.painting = true;
             viewer.controls.rotationSpeed = 0;
+        }
+
+        if (e.key === 'Shift' && !_shiftHeld) {
+            _shiftHeld = true;
+            _oiLookupList = collectOrientedImageEntries();
+            if (_pendingMouseEvent) updateOrientedImageHover(_pendingMouseEvent.clientX, _pendingMouseEvent.clientY);
         }
 
         if (e.key === 'z' || e.key === 'Z') {
@@ -3525,6 +3852,14 @@ document.addEventListener("DOMContentLoaded", () => {
                 brushState.sphere.scale.set(r, r, r);
             }
         }
+
+        // W also drives oriented-image opacity while a photo is focused
+        // (oriented_image_panel.js) — only cycle the RGB/classification
+        // blend when that mode isn't active, so the two never fight.
+        if ((e.key === 'w' || e.key === 'W') &&
+            !(window.orientedImageState && window.orientedImageState.controls)) {
+            toggleClassBlendCycle();
+        }
     });
 
     document.addEventListener('keyup', (e) => {
@@ -3532,6 +3867,19 @@ document.addEventListener("DOMContentLoaded", () => {
             brushState.painting = false;
             viewer.controls.rotationSpeed = 5;
         }
+        if (e.key === 'Shift') {
+            _shiftHeld = false;
+            hideOrientedImageTooltip();
+        }
+    });
+
+    // Safety net: if focus leaves the window mid Ctrl-hold (alt-tab, etc.)
+    // no keyup ever arrives, which would otherwise leave rotationSpeed at 0.
+    window.addEventListener('blur', () => {
+        brushState.painting = false;
+        viewer.controls.rotationSpeed = 5;
+        _shiftHeld = false;
+        hideOrientedImageTooltip();
     });
 
     const btn = document.getElementById("brush-start-icon");
@@ -3568,13 +3916,19 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (brushState.painting && ev.buttons === 1) {
                     paintAtPoint(result.pc, result.hit);
                 }
+                if (_shiftHeld) updateOrientedImageHover(ev.clientX, ev.clientY);
             } else {
                 brushState.sphere.visible = false;
+                if (_shiftHeld) hideOrientedImageTooltip();
             }
         });
     });
 
     viewer.renderer.domElement.addEventListener('click', (event) => {
+        if (event.shiftKey) {
+            focusNearestOrientedImage();
+            return;
+        }
         if (!brushState.active || !brushState.painting) return;
 
         const ray = getPickRay(event, viewer.scene.getActiveCamera());
@@ -3588,5 +3942,36 @@ document.addEventListener("DOMContentLoaded", () => {
         const result = pickAnyPointcloud(ray, pickParams);
         if (result) paintAtPoint(result.pc, result.hit);
     });
+
+    // Ctrl is already the paint-hold key, so while it's down let the scroll
+    // wheel resize the brush instead of zooming — no need to let go and
+    // reach for the panel slider mid-stroke. Registered on 'mousewheel'
+    // (the same legacy event Potree's own controls listen to, on the same
+    // element) so it fires right after their handler for this same tick —
+    // DOM listeners on one element+event run in registration order, and
+    // Potree's was registered at viewer construction, long before this
+    // script loads. That lets us just zero out whatever zoom delta their
+    // handler already queued, instead of touching the input pipeline itself.
+    viewer.renderer.domElement.addEventListener('mousewheel', (event) => {
+        if (!brushState.painting) return;
+
+        // Cancel this tick's zoom before the next render-loop update() applies it.
+        if (viewer.controls) {
+            viewer.controls.radiusDelta = 0;
+            viewer.controls.wheelDelta = 0;
+        }
+
+        let delta = 0;
+        if (event.wheelDelta !== undefined) delta = event.wheelDelta;       // Chrome/Edge/Safari
+        else if (event.detail !== undefined) delta = -event.detail;         // legacy Firefox
+
+        const factor = delta > 0 ? RADIUS_STEP_FACTOR : 1 / RADIUS_STEP_FACTOR;
+        window.brushState.radius = Math.min(RADIUS_MAX, Math.max(RADIUS_MIN, window.brushState.radius * factor));
+        updateRadiusUI();
+        if (brushState.sphere?.visible) {
+            const r = brushState.radius;
+            brushState.sphere.scale.set(r, r, r);
+        }
+    }, false);
 
 });

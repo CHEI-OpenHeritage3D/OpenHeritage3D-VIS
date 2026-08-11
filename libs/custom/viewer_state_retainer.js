@@ -22,7 +22,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 function loadParams () {
     const params = new URLSearchParams(window.location.search);
-    
+
     if(!(params.has("position") || params.has("target"))) return;
 
     const posParam = params.get('position');
@@ -35,46 +35,98 @@ function loadParams () {
 
     moveCameraTo(position, target);
 
-
-    if(params.has("visiblePCs") || params.has("volumes")) {
-        const visibleNames = params.get("visiblePCs")
-            ? params.get("visiblePCs").split(',').map(decodeURIComponent)
-            : [];
-
-        viewer.scene.pointclouds.forEach((pc) => {
-            pc.visible = visibleNames.includes(pc.name);
-        });
-
-        if(params.has("volumes")){
-            loadVolumesFromURL(params.get("volumes"));
-            setAutoSwitchState(false);
-            return;
-        } 
-            
+    // Zone / pointcloud visibility is applied later, once pointclouds and
+    // zones have loaded — see applyZoneVisibilityFromURL(), called from
+    // initZonesOps() / createZones(). Turning auto-switch off here already
+    // stops it from fighting that restore while the scene loads.
+    if(params.has("visibleZones") || params.has("visiblePCs") || params.has("volumes")) {
         setAutoSwitchState(false);
-
+        if(params.has("volumes")) loadVolumesFromURL(params.get("volumes"));
         return;
     }
-    if(params.has("volumes")){
-        loadVolumesFromURL(params.get("volumes"));
-        setAutoSwitchState(false);
-        return;
-    } 
 
     setAutoSwitchState(true);
 
 }
 
+/**
+ * One-time startup restore of zone visibility. Runs once zones AND
+ * pointclouds are loaded (called at the end of initZonesOps/createZones):
+ *   1. visibleZones URL param  → show exactly those zones.
+ *   2. legacy visiblePCs param → apply pointcloud visibility, then infer.
+ *   3. no zone info in the URL → infer which zones the default pointcloud
+ *      visibility corresponds to, so the zone checkboxes reflect reality.
+ */
+function applyZoneVisibilityFromURL() {
+    if (window._zoneURLStateApplied) return;
+    window._zoneURLStateApplied = true;
+
+    const params = new URLSearchParams(window.location.search);
+
+    if (params.has("visibleZones")) {
+        const names = params.get("visibleZones").split(",").map(decodeURIComponent);
+        const wanted = (window.zones || []).filter(z => names.includes(z.name));
+
+        if (wanted.length) {
+            setAutoSwitchState(false);
+
+            // Hide every pointcloud that belongs to no wanted zone, then
+            // enable the wanted zones (skipping any a startup path such as
+            // enableFirstZone already enabled, to not duplicate volumes).
+            const wantedPCs = new Set();
+            for (const z of wanted) for (const pc of (z.pointclouds || [])) wantedPCs.add(pc);
+            for (const pc of viewer.scene.pointclouds) {
+                if (!wantedPCs.has(pc)) pc.visible = false;
+            }
+            for (const z of wanted) {
+                if (!window.newVisibleZones.has(z)) setZoneVisibility(z, true);
+            }
+            refreshZoneCheckboxStates();
+            return;
+        }
+        // Named zones don't exist (renamed/removed) — fall through to inference.
+    }
+
+    // Legacy links stored pointcloud names: apply them so the inference
+    // below reconstructs the matching zones.
+    if (params.has("visiblePCs")) {
+        const names = params.get("visiblePCs").split(",").map(decodeURIComponent);
+        viewer.scene.pointclouds.forEach(pc => { pc.visible = names.includes(pc.name); });
+        setAutoSwitchState(false);
+    }
+
+    // Mark every zone whose pointclouds are all visible as a visible zone.
+    for (const zone of window.zones || []) {
+        if (!zone.pointclouds || zone.pointclouds.length === 0) continue;
+        if (zone.pointclouds.every(pc => pc && pc.visible)) {
+            window.newVisibleZones.add(zone);
+
+            // Pointcloud visibility is already correct — that's how we just
+            // inferred this zone is "on" — but this path never runs
+            // _enableZone()/setZoneVisibility(), so nothing has told the
+            // zone's oriented-image sets or 360 markers to come on with it.
+            // Left alone they stay on their constructor default of
+            // _hidden = true, and the global oriented-image toggle can never
+            // turn them on since it only re-applies each set's existing
+            // tracked state.
+            resetZoneOrientedImages(zone, true);
+            setMarker360sVisibilityByZone(zone, true);
+        }
+    }
+    refreshZoneCheckboxStates();
+}
+
 function changeUrl () {
     const cam = serializeCamera();
-    const visiblePCs = serializePCs();
+    const visibleZones = serializeZones();
     const volumes = serializeVolumesToCompressedString();
 
     const url = new URL(window.location);
     url.searchParams.set('position', cam.position);
     url.searchParams.set('target', cam.target);
-    if(visiblePCs) url.searchParams.set("visiblePCs", visiblePCs);
-    else url.searchParams.delete("visiblePCs");
+    if(visibleZones) url.searchParams.set("visibleZones", visibleZones);
+    else url.searchParams.delete("visibleZones");
+    url.searchParams.delete("visiblePCs"); // legacy — superseded by visibleZones
 
     if(volumes && viewer.scene.volumes.length != 0) url.searchParams.set("volumes", volumes);
     else url.searchParams.delete("volumes");
@@ -90,6 +142,7 @@ function changeUrl () {
 function serializeVolumeToCompressedString(v) {
     if(window.zoneAutoSwitchState || viewer.scene.volumes.length == 0) return null;
 
+    console.log(v);
     const volume = {
         uuid: v.uuid,
         type: 'BoxVolume',
@@ -105,8 +158,8 @@ function serializeVolumeToCompressedString(v) {
 
     const volumes = [volume];
 
-    const globalClipTask = viewer.clipTask ?? null;
-    const globalClipMethod = viewer.clipMethod ?? null;
+    const globalClipTask = v.clipTask ?? null;
+    const globalClipMethod = v.clipMethod ?? null;
 
     const payload = {
         volumes,
@@ -147,13 +200,13 @@ function serializeVolumesToCompressedString() {
     return LZString.compressToEncodedURIComponent(JSON.stringify(payload));
 }
 
-function serializePCs () {
-    
+function serializeZones () {
+
     if(window.zoneAutoSwitchState) return null; // if autoswitch on
-    
-    const visibleNames = viewer.scene.pointclouds
-        .filter(pc => pc.visible)
-        .map(pc => encodeURIComponent(pc.name));
+
+    const visibleNames = [...(window.newVisibleZones || [])]
+        .filter(z => z && z.name)
+        .map(z => encodeURIComponent(z.name));
 
     if(visibleNames.length === 0) return null;
 

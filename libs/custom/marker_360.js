@@ -342,7 +342,19 @@ function updateCameraLight() {
 
 function setMarker360sVisibilityByZone(zone, visibility) {
     if (!zone.marker360s || zone.marker360s.length === 0) return;
+    // Remember the zone-driven state so the global toolbar toggle can
+    // restore it when its mask lifts.
+    zone._marker360sVisible = visibility;
     if (window.in360View) return;
+
+    _applyMarker360sVisibility(zone, visibility);
+}
+
+// Raw application — also called by the global image-marker toggle, which
+// masks visibility without touching the tracked per-zone state.
+function _applyMarker360sVisibility(zone, visibility) {
+    // The global toolbar toggle wins: while it is off no marker may show.
+    if (visibility && window.imageMarkersGloballyHidden) visibility = false;
 
     zone.marker360s.forEach(marker360 => {
         if (!marker360._sphereMarker) return;
