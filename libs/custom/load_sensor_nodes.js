@@ -475,7 +475,7 @@ let camLight;
 loadCSV().then(points => {
     const loader = new THREE.TextureLoader();
 
-    const gradientTex = loader.load('gradient.png', (tex) => {
+    const gradientTex = loader.load('images/gradient.png', (tex) => {
         tex.minFilter = THREE.NearestFilter;
         tex.magFilter = THREE.NearestFilter;
         tex.generateMipmaps = false;

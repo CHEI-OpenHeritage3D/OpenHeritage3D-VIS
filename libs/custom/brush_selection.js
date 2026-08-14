@@ -642,7 +642,6 @@ style.textContent += `
 }
 
 `;
-// Replace the existing #gridPanel CSS block
 style.textContent += `
 
 /* ── GRID PANEL ─────────────────────────────────────────── */

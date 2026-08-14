@@ -1,6 +1,6 @@
 style.textContent+=`.misc-panel {
     position: absolute;
-    width: 200px;
+    width: 150px;
     background: #1a1b1f;
     border: 1px solid #333;
     border-radius: 6px;
@@ -299,24 +299,24 @@ document.addEventListener("DOMContentLoaded", () => {
 
     miscButtonsList = (window.miscButtons) ? miscButtons : [
 			{
-				name: "Create Zones", id: "createZoneButton", onClick: () => toggleZoneCreationMenu()
+				name: "Zone Management", id: "createZoneButton", onClick: () => toggleZoneCreationMenu()
 			},
 			{
-				name: "Download Volume Selection", id: "downloadVolumeBtn", onClick: () => {
+				name: "Download Selection", id: "downloadVolumeBtn", onClick: () => {
 					openDownloadPanel();
 					setAutoSwitchState(false);
 					viewer.scene.removeAllClipVolumes();
 				}
 			},
 			{
-				name: "Transform Point Cloud", id: "transformPCBtn", onClick: () => openTransformPanel()
+				name: "Transformation", id: "transformPCBtn", onClick: () => openTransformPanel()
 			},
 			{
-				name: "Open Classification Brush", id: "brushModeBtn", onClick: () => openBrushPanel()
+				name: "Classification", id: "brushModeBtn", onClick: () => openBrushPanel()
 			},
-			{
-				name: "More Options Coming Soon", id: "extraBtn", onClick: () => {}
-			},
+			// {
+			// 	name: "More Options Coming Soon", id: "extraBtn", onClick: () => {}
+			// },
 		];
     
     console.log(miscButtonsList);
@@ -368,12 +368,15 @@ function toggleMiscToolsMenu() {
     // <div class="misc-item" id="seeThroughDemoBtn">See-Through</div>
     document.body.appendChild(menu);
 
-    // position near the button
+    // position below the button, right-aligned with the toolbar
     const btn = document.getElementById("miscToolsButton");
     const r = btn.getBoundingClientRect();
 
+    const toolbar = document.getElementById("potree_toolbar");
+    const rightEdge = toolbar ? toolbar.getBoundingClientRect().right : r.right;
+
     menu.style.top = (r.bottom + 6) + "px";
-    menu.style.left = (r.right - 200) + "px"; // adjust
+    menu.style.left = (rightEdge - menu.offsetWidth) + "px";
     menu.classList.add("open");
 
     // === Close when clicking outside ===
