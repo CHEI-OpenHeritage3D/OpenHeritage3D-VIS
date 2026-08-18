@@ -1,4 +1,26 @@
 <!DOCTYPE html>
+<!--
+	standalone.html — self-contained OpenHeritage3D-VIS viewer
+	================================================================
+	A barebones entry point that loads point clouds directly from a URL.
+
+	Unlike index.html (which resolves datasets out of the OpenHeritage3D /
+	ALERTCalifornia / OpenOcean3D archives), this page has no repository
+	plumbing: no DOI lookup, no project-title or citation fetch, no license
+	gate, no zones.json or classification-ledger auto-load. Everything else
+	— the classification brush, tiled LAS export, zones, oriented images,
+	360 markers, transforms, floating panels — is identical.
+
+	TO USE YOUR OWN DATA: edit the POINT CLOUDS block near the bottom of
+	this file. Serve the directory over HTTP (point clouds will not load
+	from file://):
+
+	    python3 -m http.server 8080
+
+	then open http://localhost:8080/standalone.html
+
+	To deploy this as the default page, copy it over index.html.
+-->
 <html lang="en">
 <head>
 	<meta charset="utf-8">
@@ -6,14 +28,13 @@
 	<meta name="author" content="">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 
-	<!-- <title>Potree Viewer</title> -->
+	<title>OpenHeritage3D-VIS | Potree Viewer</title>
 
 	<link rel="stylesheet" type="text/css" href="build/potree/potree.css">
 	<link rel="stylesheet" type="text/css" href="libs/jquery-ui/jquery-ui.min.css">
 	<link rel="stylesheet" type="text/css" href="libs/openlayers3/ol.css">
 	<link rel="stylesheet" type="text/css" href="libs/spectrum/spectrum.css">
 	<link rel="stylesheet" type="text/css" href="libs/jstree/themes/mixed/style.css">
-
 
 	<link rel="icon" type="image/x-icon" href="images/favicon.ico">
 	<style>
@@ -79,18 +100,7 @@
 	<script src="libs/jstree/jstree.js"></script>
 	<script src="build/potree/potree.js"></script>
 
-	
-
-	<!-- <script src="libs/plasio/js/laslaz.js"></script> -->
-<!-- 
-	<script src='libs/sql.js/sql-wasm.js'></script>
-	<script src='libs/geopackage/geopackage.js'></script>
-	<script src="libs/three.js/extra/lines/LineSegmentsGeometry.js"></script>
-	<script src="libs/three.js/extra/lines/LineGeometry.js"></script>
-	<script src="libs/three.js/extra/lines/LineMaterial.js"></script>
-	<script src="libs/three.js/extra/lines/LineSegments2.js"></script>
-	<script src="libs/three.js/extra/lines/Line2.js"></script> -->
-
+<!-- Photo Sphere Viewer — only needed if the scene has 360 panorama markers -->
 <script type="importmap">
     {
         "imports": {
@@ -102,10 +112,8 @@
     }
 </script>
 
-
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/core/index.min.css" />
 <script src="https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/core/index.min.js"></script>
-
 
 
 <div class="potree_container" style="position: absolute; width: 100%; height: 100%; left: 0px; top: 0px; ">
@@ -125,72 +133,30 @@
 </div>
 
 
-	
-	<div id="fullscreen-btn">
-		<img src="images/icons8-full-screen-50.png" />
-	</div>
-
-	
 	<script>
 		if (window !== window.top) {
 			document.body.classList.add("embedded");
 		}
-			//############ CONFIG ###############
 
-			let params = new URLSearchParams(document.location.search);
-			window.vtype = params.get("vtype");
+		//############ VIEWER ###############
 
-			const VTYPE_CONFIG = {
-				ac: {
-					datasetPrefix: "https://pointcloud.ucsd.edu/archive_temp/oh3d_store/oh3d-vis/alertca_datasets/",
-					website: "https://alertcalifornia.digital-atlas.org",
-					websiteName: "ALERTCalifornia Archive"
-				},
-				oh3d: {
-					datasetPrefix: "https://pointcloud.ucsd.edu/archive_temp/oh3d_store/oh3d-vis/datasets/",
-					website: "https://openheritage3d.org",
-					websiteName: "OpenHeritage3D"
-				},
-				kvap: {
-					datasetPrefix: "https://pointcloud.ucsd.edu/archive_temp/oh3d_store/oh3d-vis/kvap_datasets/",
-					website: "https://kvap.digital-atlas.org",
-					websiteName: "KVAP"
-				},
-				oo3d: {
-					datasetPrefix: "https://pointcloud.ucsd.edu/archive_temp/oh3d_store/remote-vis/openocean3d_vis/",
-					website: "https://openocean3d.org",
-					websiteName: "OpenOcean3D"
-				}
-			};
+		let params = new URLSearchParams(document.location.search);
 
-			// fallback defaults
-			const DEFAULT_CONFIG = {
-				datasetPrefix: "https://pointcloud.ucsd.edu/archive_temp/oh3d_store/oh3d-vis/datasets/",
-				website: null
-			};
+		// Creates Viewer
+		window.viewer = new Potree.Viewer(document.getElementById("potree_render_area"));
 
-			const cfg = VTYPE_CONFIG[window.vtype] || DEFAULT_CONFIG;
+		viewer.setEDLEnabled(true);
+		viewer.useHQ = false;
+		viewer.setFOV(60);
+		viewer.setPointBudget(5*1000*1000);
+		viewer.setBackground("gradient");// ["skybox", "gradient", "black", "white"];
+		viewer.loadSettingsFromURL();
 
-			window.datasetPrefix = cfg.datasetPrefix;
-			window.website = cfg.website;
-			window.websiteName = cfg.websiteName;
+		// Default ASPRS-style classification schema. The Classification panel can
+		// add user-defined classes (codes 64-255) on top of this at runtime, and
+		// an imported ledger CSV restores whatever schema it was exported with.
+		viewer.setClassifications({
 
-
-			document.title = window.websiteName + " | Potree Viewer";
-
-			
-
-			// Creates Viewer
-			window.viewer = new Potree.Viewer(document.getElementById("potree_render_area"));
-			
-			viewer.setEDLEnabled(true);
-			viewer.useHQ = false;
-			viewer.setFOV(60);
-			viewer.setPointBudget(5*1000*1000);
-			viewer.setBackground("gradient");// ["skybox", "gradient", "black", "white"];
-			viewer.loadSettingsFromURL();
-			viewer.setClassifications({
-	
 			0:       { visible: true, name: 'never classified'  , color: [0.5,  0.5,  0.5,  1.0] },
 			1:       { visible: true, name: 'unclassified'      , color: [0.5,  0.5,  0.5,  1.0] },
 			2:       { visible: true, name: 'ground'            , color: [0.63, 0.32, 0.18, 1.0] },
@@ -204,20 +170,32 @@
 			12:      { visible: true, name: 'overlap'           , color: [1.0,  1.0,  0.0,  1.0] },
 			17:      { visible: true, name: 'Bridge Deck'       , color: [0.384, 0.624, 0.808, 1.0]},
 			DEFAULT: { visible: true, name: 'default'           , color: [0.3,  0.6,  0.6,  0.5] },
-		
-			});
 
-			viewer.compass.setVisible(false);	// compass disabled
-			
-			viewer.loadGUI(() => {
-				viewer.setLanguage('en');
-				$("#menu_appearance").next().show();
-				$("#menu_tools").next().show();
-				$("#menu_scene").next().show();
-				//viewer.toggleSidebar();
-			});
+		});
+
+		viewer.compass.setVisible(false);	// compass disabled
+
+		viewer.loadGUI(() => {
+			viewer.setLanguage('en');
+			$("#menu_appearance").next().show();
+			$("#menu_tools").next().show();
+			$("#menu_scene").next().show();
+			//viewer.toggleSidebar();
+		});
+
+		// No archive license gate in the standalone build, so the download tool
+		// opens straight away. index.html instead sets this from the terms modal.
+		window.acceptedTerms = true;
 
 </script>
+
+<!--
+	Custom modules. Load order matters in two places:
+	  • zone_creation.js creates the shared `style` element that every other
+	    panel appends its CSS to — it must come first.
+	  • brush_selection.js and potree_point_download.js expect the viewer to
+	    already exist (created above).
+-->
 <script src="libs/custom/panel_window_manager.js"></script>
 <script src="libs/custom/zone_creation.js"></script>
 <script src="libs/custom/zone_search.js"></script>
@@ -227,60 +205,12 @@
 <script src="libs/custom/marker_360.js"></script>
 <script type="module" src="libs/custom/marker_360_image.js"></script>
 <script src="libs/custom/layer_map.js"></script>
-<script src="libs/custom/default_config.js"></script>
 <script src="libs/custom/default_zone.js"></script>
 <script src="libs/custom/viewer_state_retainer.js"></script>
 <script src="libs/custom/zone_beacon_og.js"></script>
 <script src="libs/custom/brush_selection.js"></script>
 <script src="libs/custom/oriented_image_panel.js"></script>
-	
-<script>
-		// Loads the config Script which loads pointclouds and other overriding settings
 
-		//loads pointcloud from config
-		// params = new URLSearchParams(document.location.search);
-		window.doi = params.get("doi");
-		window.configURL = datasetPrefix + doi + "/potree/config.js";
-
-		window.acceptedTerms = params.get("acceptedTerms");
-		
-		const newScript = document.createElement("script");
-		newScript.src = configURL;
-		
-		window.zoneURL = datasetPrefix + doi + "/potree/zones.json";
-		window.classificationURL = datasetPrefix + doi + "/potree/classification_edits.csv";
-
-
-		// tries to load config
-		newScript.onload = () => {
-			if(window.loadDefaultConfigFirst){
-				loadAllAvailableDataTypes(window.doi);
-			}
-			// after pointclouds have loaded
-			console.log("Config loaded:", configURL);
-			setTitle();
-			
-			initZones();
-
-			// loadMarker360s();
-		};
-
-		newScript.onerror = () => {
-			console.error("Failed to load config:", configURL);
-			console.log("loading default config");
-			loadAllAvailableDataTypes(window.doi);
-			setTitle();
-
-			initZones();
-		};
-
-		
-		setAutoSwitchState(true);
-
-		document.body.appendChild(newScript);
-
-
-	</script>
 	<script>
 
         function loop(timestamp) {
@@ -297,76 +227,6 @@
 
     </script>
 
-
-	<script>
-		async function setTitle(){
-
-			const title = await fetchProjectTitle(window.doi);
-			await fetchProjectCitationLicense(window.doi);
-			window.docTitle = title || window.doi;
-
-
-			document.title = window.docTitle + " | " + window.websiteName;
-
-			const oh3dLink = window.website + "/project.php?id=" + window.doi;
-
-			console.log(window.website);
-			if(window !== window.top){
-				document.getElementById("viewer-title").innerHTML = `<span style="opacity:0.9"><a> ${window.docTitle} | <img src="${window.website}/images/transparent-White.png" style="height:25px; margin-left:6px; vertical-align:middle; opacity:0.8;"></a></span>`;
-			}
-			else{
-				document.getElementById("viewer-title").innerHTML = `<span style="opacity:0.9"><a href=${oh3dLink}> ${window.docTitle} | <img src="${window.website}/images/transparent-White.png" style="height:25px; margin-left:6px; vertical-align:middle; opacity:0.8;"><img src="images/icons8-arrow-24.png"
-					style="width:14px; height:14px; margin-left:6px; vertical-align:middle; opacity:0.8;"></a></span>`;
-			}
-
-			positionTitle();
-		}
-
-		async function fetchProjectTitle(doi) {
-			const url = `${window.website}/api/project_title.php?doi=${encodeURIComponent(doi)}`;
-			console.log(url);
-			try {
-				const res = await fetch(url);
-				if (!res.ok) {
-					console.error("Failed to fetch project title:", res.status);
-					return null;
-				}
-
-				const data = await res.json();
-				return data.title +", "+data.country || null;
-
-			} catch (err) {
-				console.error("Error fetching project title:", err);
-				return null;
-			}
-		}
-
-		async function fetchProjectCitationLicense(doi) {
-			const url = `${window.website}/api/project_citation.php?doi=${encodeURIComponent(doi)}`;
-			console.log(url);
-			try {
-				const res = await fetch(url);
-				if (!res.ok) {
-					console.error("Failed to fetch project citation:", res.status);
-					return null;
-				}
-
-				const data = await res.json();
-				window.projectCitation = data.citation;
-				    return {
-						citation:    data.citation     || null,
-						licenseName: data.license_type || null,
-						licenseUrl:  data.license_link || null,
-					};
-
-			} catch (err) {
-				console.error("Error fetching project license:", err);
-				return null;
-			}
-		}
-
-	</script>
-
 	<script>
 	// 1: define html of toolbar first 
 	// 2: then populate with content and actions 
@@ -376,8 +236,6 @@
 	// - sidebar.js
 	// - PropertiesPanel.html and its dependencies (DistancePanel, ProfilePanel, ...)
 	// 
-
-
 
 	// HTML
 const elToolbar = $("#potree_toolbar");
@@ -522,9 +380,6 @@ toggleBtn.addEventListener("click", () => {
 			"Elevation",
 			"Intensity",
 			"Color",
-			//"indices",
-			// "intensity",
-			// "source id",
 		];
 
 		let attributeSelection = elToolbar.find('#optMaterial');
@@ -532,14 +387,6 @@ toggleBtn.addEventListener("click", () => {
 			let elOption = $(`<option>${option}</option>`);
 			attributeSelection.append(elOption);
 		}
-
-		const updateMaterialSelection = (event, ui) => {
-			let selectedValue = attributeSelection.selectmenu().val();
-
-			for(const pointcloud of viewer.scene.pointclouds){
-				pointcloud.material.activeAttributeName = selectedValue;
-			}
-		};
 
 		attributeSelection.on("change", () => {
 		let selected = attributeSelection.val();
@@ -568,21 +415,74 @@ toggleBtn.addEventListener("click", () => {
 
 	}
 
+	</script>
 
-// Show fullscreen button ONLY inside iframe
-if (window !== window.top) {
-    document.getElementById("fullscreen-btn").style.display = "flex";
+	<script>
+		// ############################################################
+		//  POINT CLOUDS — edit this block to load your own data
+		// ############################################################
+		//
+		// Any Potree 2.0 octree works: pass the URL of its metadata.json.
+		// Convert LAS/LAZ with PotreeConverter 2.x:
+		//     PotreeConverter input.laz -o output_dir
+		//
+		// Call Potree.loadPointCloud() once per cloud; they can be layered
+		// freely (e.g. an aerial scan plus a photogrammetric model of the
+		// same site) and the Classification panel can target one or all.
 
-    document.getElementById("fullscreen-btn").addEventListener("click", () => {
+		window.viewerTitle = "Pantheon — LiDAR, Terrestrial";
 
-		const cam = serializeCamera();
+		Potree.loadPointCloud("https://pointcloud.ucsd.edu/archive_temp/oh3d_store/oh3d-vis/datasets/t9sj-mf53/potree/t9sj-mf53_lidar_terrestrial/metadata.json", "Pantheon lidar terrestrial", e => {
+			let pointcloud = e.pointcloud;
+			let material = pointcloud.material;
+			
+			material.activeAttributeName = "rgba";
+			//pointcloud.material.intensityRange = [0,65535];
+			material.minSize = 2;
+			material.rgbGamma = 0.43;
+			material.rgbContrast = 0.22;
+			material.pointSizeType = Potree.PointSizeType.ADAPTIVE;
+			material.shape = Potree.PointShape.CIRCLE;
+			
+			viewer.scene.addPointCloud(pointcloud);
+			//viewer.fitToScreen();
+			viewer.scene.view.position.set(-25.515, -90.750, 23.166);
+			viewer.scene.view.lookAt(new THREE.Vector3(-3.481, -46.787, 20.188));
+		});
 
-        window.top.location.href =
-            "https://pointcloud.ucsd.edu/archive_temp/oh3d_store/oh3d-vis/base_potree_template/?vtype=" + window.vtype + "&doi=" + window.doi + "&position=" + cam.position + "&target=" + cam.target;
-    });
-}
+		// ############################################################
+		//  SCENE BOOTSTRAP
+		// ############################################################
+		//
+		// index.html calls initZones(), which additionally fetches a
+		// zones.json and a classification ledger from the archive. Here we
+		// run only the local half: wait for the octree roots to resolve,
+		// wrap each cloud in a default zone so the zone-aware panels have
+		// something to talk to, and sync the Material dropdown to whatever
+		// attribute the clouds actually loaded with.
+		//
+		// Note: initZones() must NOT be used here — it would call
+		// importEditsFromCSV(undefined), which falls back to opening a file
+		// picker on page load.
 
+		(async () => {
+			setAutoSwitchState(true);
+
+			await waitForPointCloudsLoaded();
+
+			createZones();
+			updateMaterialMenuOnStart();
+			updateZoneCount();
+
+			// Static title — no project-title lookup in the standalone build.
+			const titleEl = document.getElementById("viewer-title");
+			if (titleEl && window.viewerTitle) {
+				titleEl.innerHTML = `<span style="opacity:0.9">${window.viewerTitle}</span>`;
+				positionTitle();
+			}
+		})();
 
 	</script>
-  <!-- <div style="position: absolute; z-index: 9999; left: 5px; bottom: 1px;" onclick="window.location.href = 'http://potree.org', '_blank'"><img src="/OH3D/build/potree/resources/logo_small.png" width="125" /></div></body> -->
+
+</body>
 </html>
