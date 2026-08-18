@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software, please cite it using the metadata below.
+  If you use it in academic work, please also cite the associated paper
+  once it is published (see preferred-citation below).
+type: software
+title: OpenHeritage3D-VIS
+abstract: >-
+  A browser-based Potree viewer template for cultural heritage point clouds,
+  extending base Potree with a classification brush tool, zone-based
+  navigation, oriented-image panoramas, and point cloud download tooling.
+authors:
+  - family-names: Agarwal
+    given-names: Aviral
+    email: aviralagarwal15@gmail.com
+    affiliation: >-
+      ALERTCalifornia, Cultural Heritage Engineering Initiative (CHEI),
+      University of California San Diego
+repository-code: 'https://github.com/CHEI-OpenHeritage3D/OpenHeritage3D-VIS'
+url: 'https://github.com/CHEI-OpenHeritage3D/OpenHeritage3D-VIS'
+license: BSD-2-Clause
+date-released: '2026-08-18'
+preferred-citation:
+  type: article
+  title: TODO — fill in once the paper is published
+  authors:
+    - family-names: Agarwal
+      given-names: Aviral
+  journal: TODO
+  year: 2026
+  doi: TODO

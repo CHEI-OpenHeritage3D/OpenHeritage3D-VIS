@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<!--
+	standalone.html — self-contained OpenHeritage3D-VIS viewer
+	================================================================
+	A barebones entry point that loads point clouds directly from a URL.
+
+	Unlike index.html (which resolves datasets out of the OpenHeritage3D /
+	ALERTCalifornia / OpenOcean3D archives), this page has no repository
+	plumbing: no DOI lookup, no project-title or citation fetch, no license
+	gate, no zones.json or classification-ledger auto-load. Everything else
+	— the classification brush, tiled LAS export, zones, oriented images,
+	360 markers, transforms, floating panels — is identical.
+
+	TO USE YOUR OWN DATA: edit the POINT CLOUDS block near the bottom of
+	this file. Serve the directory over HTTP (point clouds will not load
+	from file://):
+
+	    python3 -m http.server 8080
+
+	then open http://localhost:8080/standalone.html
+
+	To deploy this as the default page, copy it over index.html.
+-->
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="description" content="">
+	<meta name="author" content="">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+
+	<title>OpenHeritage3D-VIS | Potree Viewer</title>
+
+	<link rel="stylesheet" type="text/css" href="build/potree/potree.css">
+	<link rel="stylesheet" type="text/css" href="libs/jquery-ui/jquery-ui.min.css">
+	<link rel="stylesheet" type="text/css" href="libs/openlayers3/ol.css">
+	<link rel="stylesheet" type="text/css" href="libs/spectrum/spectrum.css">
+	<link rel="stylesheet" type="text/css" href="libs/jstree/themes/mixed/style.css">
+
+	<link rel="icon" type="image/x-icon" href="images/favicon.ico">
+	<style>
+		#potree_toolbar{
+		position: absolute; 
+		z-index: 10000; 
+		right: 0px; 
+		top: 0px;
+		background: rgba(0,0,0,0.4);
+		backdrop-filter: blur(4px);
+		border-radius: 6px;
+		color: white;
+		padding: 0.3em 0.8em;
+		font-family: "system-ui";
+		border-radius: 0em 0em 0.3em 0.3em;
+		display: flex;
+	}
+
+	.potree_toolbar_label{
+		text-align: center;
+		font-size: smaller;
+		opacity: 0.9;
+	}
+
+	.potree_toolbar_separator{
+		background: white;
+		padding: 0px;
+		margin: 5px 10px;
+		width: 1px;
+	}
+	
+	</style>
+
+	<style>
+		/* Ensure PSV wrappers are not painting white/black */
+		#viewer-360 .psv-container,
+		#viewer-360 .psv-canvas-container,
+		#viewer-360 canvas {
+			background: transparent !important;
+		}
+
+		#photo360 {
+    pointer-events: none;
+		}
+
+		#viewer-360 {
+			pointer-events: auto;  /* keeps 360 viewer interactive */
+		}
+	</style>
+</head>
+
+<body>
+	<script src="libs/jquery/jquery-3.1.1.min.js"></script>
+	<script src="libs/spectrum/spectrum.js"></script>
+	<script src="libs/jquery-ui/jquery-ui.min.js"></script>
+	<script src="libs/three.js/build/three.js"></script>
+	<script src="libs/other/BinaryHeap.js"></script>
+	<script src="libs/tween/tween.min.js"></script>
+	<script src="libs/d3/d3.js"></script>
+	<script src="libs/proj4/proj4.js"></script>
+	<script src="libs/openlayers3/ol.js"></script>
+	<script src="libs/i18next/i18next.js"></script>
+	<script src="libs/jstree/jstree.js"></script>
+	<script src="build/potree/potree.js"></script>
+
+<!-- Photo Sphere Viewer — only needed if the scene has 360 panorama markers -->
+<script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three/build/three.module.js",
+            "@photo-sphere-viewer/core": "https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/core/index.module.js",
+            "@photo-sphere-viewer/gyroscope-plugin" : "https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/gyroscope-plugin/index.module.js",
+			"@photo-sphere-viewer/equirectangular-tiles-adapter" : "https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/equirectangular-tiles-adapter@5.14.1/index.module.js"
+        }
+    }
+</script>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/core/index.min.css" />
+<script src="https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/core/index.min.js"></script>
+
+
+<div class="potree_container" style="position: absolute; width: 100%; height: 100%; left: 0px; top: 0px; ">
+    <div id="potree_render_area">		
+		<div id="viewer-title" style="z-index: 200000;"></div>
+
+		<div id="toolbar-wrapper" style="z-index: 200000;">
+            <div id="toolbar-toggle">▼</div>
+            <div id="potree_toolbar"></div>
+        </div>
+        <div id="photo360" style="display:none; position:absolute; inset:0; z-index:10000;">
+            <div id="viewer-360" style="width:100%; height:100%;"></div>
+        </div>
+
+    </div>
+    <div id="potree_sidebar_container" ></div>
+</div>
+
+
+	<script>
+		if (window !== window.top) {
+			document.body.classList.add("embedded");
+		}
+
+		//############ VIEWER ###############
+
+		let params = new URLSearchParams(document.location.search);
+
+		// Creates Viewer
+		window.viewer = new Potree.Viewer(document.getElementById("potree_render_area"));
+
+		viewer.setEDLEnabled(true);
+		viewer.useHQ = false;
+		viewer.setFOV(60);
+		viewer.setPointBudget(5*1000*1000);
+		viewer.setBackground("gradient");// ["skybox", "gradient", "black", "white"];
+		viewer.loadSettingsFromURL();
+
+		// Default ASPRS-style classification schema. The Classification panel can
+		// add user-defined classes (codes 64-255) on top of this at runtime, and
+		// an imported ledger CSV restores whatever schema it was exported with.
+		viewer.setClassifications({
+
+			0:       { visible: true, name: 'never classified'  , color: [0.5,  0.5,  0.5,  1.0] },
+			1:       { visible: true, name: 'unclassified'      , color: [0.5,  0.5,  0.5,  1.0] },
+			2:       { visible: true, name: 'ground'            , color: [0.63, 0.32, 0.18, 1.0] },
+			3:       { visible: true, name: 'low vegetation'    , color: [0.0,  1.0,  0.0,  1.0] },
+			4:       { visible: true, name: 'medium vegetation' , color: [0.0,  0.8,  0.0,  1.0] },
+			5:       { visible: true, name: 'high vegetation'   , color: [0.0,  0.6,  0.0,  1.0] },
+			6:       { visible: true, name: 'building'          , color: [1.0,  0.66, 0.0,  1.0] },
+			7:       { visible: false, name: 'low point(noise)'  , color: [1.0,  0.0,  1.0,  1.0] },
+			8:       { visible: true, name: 'key-point'         , color: [1.0,  0.0,  0.0,  1.0] },
+			9:       { visible: true, name: 'water'             , color: [0.0,  0.0,  1.0,  1.0] },
+			12:      { visible: true, name: 'overlap'           , color: [1.0,  1.0,  0.0,  1.0] },
+			17:      { visible: true, name: 'Bridge Deck'       , color: [0.384, 0.624, 0.808, 1.0]},
+			DEFAULT: { visible: true, name: 'default'           , color: [0.3,  0.6,  0.6,  0.5] },
+
+		});
+
+		viewer.compass.setVisible(false);	// compass disabled
+
+		viewer.loadGUI(() => {
+			viewer.setLanguage('en');
+			$("#menu_appearance").next().show();
+			$("#menu_tools").next().show();
+			$("#menu_scene").next().show();
+			//viewer.toggleSidebar();
+		});
+
+		// No archive license gate in the standalone build, so the download tool
+		// opens straight away. index.html instead sets this from the terms modal.
+		window.acceptedTerms = true;
+
+</script>
+
+<!--
+	Custom modules. Load order matters in two places:
+	  • zone_creation.js creates the shared `style` element that every other
+	    panel appends its CSS to — it must come first.
+	  • brush_selection.js and potree_point_download.js expect the viewer to
+	    already exist (created above).
+-->
+<script src="libs/custom/panel_window_manager.js"></script>
+<script src="libs/custom/zone_creation.js"></script>
+<script src="libs/custom/zone_search.js"></script>
+<script src="libs/custom/potree_point_download.js"></script>
+<script type="module" src="libs/custom/transform_controls.js"></script>
+<script src="libs/custom/misc_tools_button.js"></script>
+<script src="libs/custom/marker_360.js"></script>
+<script type="module" src="libs/custom/marker_360_image.js"></script>
+<script src="libs/custom/layer_map.js"></script>
+<script src="libs/custom/default_zone.js"></script>
+<script src="libs/custom/viewer_state_retainer.js"></script>
+<script src="libs/custom/zone_beacon_og.js"></script>
+<script src="libs/custom/brush_selection.js"></script>
+<script src="libs/custom/oriented_image_panel.js"></script>
+
+	<script>
+
+        function loop(timestamp) {
+			requestAnimationFrame(loop);
+
+			window.viewer.update(viewer.clock.getDelta(), timestamp);
+			viewer.render();
+
+			window.animateBeacons();
+			window.animateMarker360s();
+		}
+
+        requestAnimationFrame(loop);
+
+    </script>
+
+	<script>
+	// 1: define html of toolbar first 
+	// 2: then populate with content and actions 
+	//
+	// Following files can be used as references on how to add certain functionality to the toolbar:
+	// - sidebar.html
+	// - sidebar.js
+	// - PropertiesPanel.html and its dependencies (DistancePanel, ProfilePanel, ...)
+	// 
+
+	// HTML
+const elToolbar = $("#potree_toolbar");
+
+const toggleBtn = document.getElementById("toolbar-toggle");
+const toolbar = document.getElementById("potree_toolbar");
+
+toggleBtn.addEventListener("click", () => {
+    const collapsed = toolbar.classList.toggle("collapsed");
+
+    toggleBtn.textContent = collapsed ? "▲" : "▼";
+
+    // Reposition title after animation completes
+    setTimeout(positionTitle, 350);
+});
+
+	elToolbar.html(`
+
+		<span>
+			<div class="potree_toolbar_label">
+				Measure
+			</div>
+			<div>
+				<img name="action_measure_point" src="${Potree.resourcePath}/icons/point.svg" class="annotation-action-icon" style="width: 2em; height: auto;"/>
+				<img name="action_measure_distance" src="${Potree.resourcePath}/icons/distance.svg" class="annotation-action-icon" style="width: 2em; height: auto;"/>
+				<img name="action_measure_height" src="${Potree.resourcePath}/icons/height.svg" class="annotation-action-icon" style="width: 2em; height: auto;"/>
+				<img name="action_reset_tools" src="${Potree.resourcePath}/icons/reset_tools.svg" class="annotation-action-icon" style="width: 2em; height: auto;"/>
+			</div>
+		</span>
+
+		<span class="potree_toolbar_separator" />
+
+		<span>
+			<div class="potree_toolbar_label" style="width: 6em">
+				Material
+			</div>
+			<div>
+				<center>
+				<select id="optMaterial" name="optMaterial"></select>
+				</center>
+			</div>
+		</span>
+
+        <span class="potree_toolbar_separator" />
+		<div id="oiToggleSection" style="display: none;">
+			<div class="potree_toolbar_label" style="width: 6em">
+				Images
+			</div>
+			<div>
+				<center>
+					<img
+						id="globalOIToggle"
+						title="Show/hide all oriented images and 360 markers"
+						src="images/orientedImage.png"
+						class="annotation-action-icon"
+						style="width: 1.7em; height: auto;"
+					/>
+				</center>
+			</div>
+		</div>
+
+        <span class="potree_toolbar_separator" id="oiToggleSeparator" style="display: none;" />
+		<div>
+			<div class="potree_toolbar_label" style="width: 6em">
+				Zones
+			</div>
+			<div>
+				<center>
+					<div class="zone-search-icon-wrapper">
+						<img
+							id="searchZonesButton"
+							title="Search Zones"
+							src="images/icons8-magnifying-glass-50.png"
+							class="annotation-action-icon"
+							style="width: 2em; height: auto;"
+						/>
+						<div id="zoneCountBadge">0</div>
+					</div>
+				</center>
+			</div>
+		</div>
+
+		<span class="potree_toolbar_separator" />
+        <div>
+			<div class="potree_toolbar_label" style="width: 6em">
+                Tools
+            </div>
+            <div>
+                <center>
+                    <img id="miscToolsButton" src="images/icons8-settings-50.png" class="annotation-action-icon" style="width: 2em; height: auto;"/>
+                </center>
+            </div>
+        </div>
+
+	`);
+
+
+	{ // MEASURE
+		elToolbar.find("img[name=action_measure_point]").click( () => {
+			const measurement = viewer.measuringTool.startInsertion({
+				showDistances: false,
+				showAngles: false,
+				showCoordinates: true,
+				showArea: false,
+				closed: true,
+				maxMarkers: 1,
+				name: 'Point'
+			});
+		});
+
+		elToolbar.find("img[name=action_measure_distance]").click( () => {
+			const measurement = viewer.measuringTool.startInsertion({
+				showDistances: true,
+				showArea: false,
+				closed: false,
+				name: 'Distance'
+			});
+		});
+		
+		elToolbar.find("img[name=action_measure_height]").click( () => {
+			const measurement = viewer.measuringTool.startInsertion({
+				showDistances: false,
+				showHeight: true,
+				showArea: false,
+				closed: false,
+				maxMarkers: 2,
+				name: 'Height'
+			});
+		});
+		elToolbar.find("img[name=action_reset_tools]").click( () => {
+				const measurement = this.viewer.scene.removeAllMeasurements();
+		});
+
+	}
+
+	{ // MATERIAL
+		let options = [
+			"RGBA", 
+			"Classification",
+			"RGBA Classes",
+			"Intensity Classes",
+			"Elevation",
+			"Intensity",
+			"Color",
+		];
+
+		let attributeSelection = elToolbar.find('#optMaterial');
+		for(let option of options){
+			let elOption = $(`<option>${option}</option>`);
+			attributeSelection.append(elOption);
+		}
+
+		attributeSelection.on("change", () => {
+		let selected = attributeSelection.val();
+		
+		for (const pointcloud of viewer.scene.pointclouds){
+
+			if(selected === "RGBA Classes"){
+				pointcloud.material.activeAttributeName = "composite";
+				pointcloud.material.weightRGBA = [100];
+				pointcloud.material.weightIntensity = [0];
+				pointcloud.material.intensityRange = [16, 65000];
+				pointcloud.material.weightClassification = [0.75];
+			}
+			else if(selected === "Intensity Classes"){
+				pointcloud.material.activeAttributeName = "composite";
+				pointcloud.material.weightRGBA = [0];
+				pointcloud.material.weightIntensity = [90];
+				pointcloud.material.intensityRange = [16, 65000];
+				pointcloud.material.weightClassification = [10];
+			}
+			else {
+				pointcloud.material.activeAttributeName = selected.toLowerCase();
+			}
+		}
+	});
+
+	}
+
+	</script>
+
+	<script>
+		// ############################################################
+		//  POINT CLOUDS — edit this block to load your own data
+		// ############################################################
+		//
+		// Any Potree 2.0 octree works: pass the URL of its metadata.json.
+		// Convert LAS/LAZ with PotreeConverter 2.x:
+		//     PotreeConverter input.laz -o output_dir
+		//
+		// Call Potree.loadPointCloud() once per cloud; they can be layered
+		// freely (e.g. an aerial scan plus a photogrammetric model of the
+		// same site) and the Classification panel can target one or all.
+
+		window.viewerTitle = "Pantheon — LiDAR, Terrestrial";
+
+		Potree.loadPointCloud("https://pointcloud.ucsd.edu/archive_temp/oh3d_store/oh3d-vis/datasets/t9sj-mf53/potree/t9sj-mf53_lidar_terrestrial/metadata.json", "Pantheon lidar terrestrial", e => {
+			let pointcloud = e.pointcloud;
+			let material = pointcloud.material;
+			
+			material.activeAttributeName = "rgba";
+			//pointcloud.material.intensityRange = [0,65535];
+			material.minSize = 2;
+			material.rgbGamma = 0.43;
+			material.rgbContrast = 0.22;
+			material.pointSizeType = Potree.PointSizeType.ADAPTIVE;
+			material.shape = Potree.PointShape.CIRCLE;
+			
+			viewer.scene.addPointCloud(pointcloud);
+			//viewer.fitToScreen();
+			viewer.scene.view.position.set(-25.515, -90.750, 23.166);
+			viewer.scene.view.lookAt(new THREE.Vector3(-3.481, -46.787, 20.188));
+		});
+
+		// ############################################################
+		//  SCENE BOOTSTRAP
+		// ############################################################
+		//
+		// index.html calls initZones(), which additionally fetches a
+		// zones.json and a classification ledger from the archive. Here we
+		// run only the local half: wait for the octree roots to resolve,
+		// wrap each cloud in a default zone so the zone-aware panels have
+		// something to talk to, and sync the Material dropdown to whatever
+		// attribute the clouds actually loaded with.
+		//
+		// Note: initZones() must NOT be used here — it would call
+		// importEditsFromCSV(undefined), which falls back to opening a file
+		// picker on page load.
+
+		(async () => {
+			setAutoSwitchState(true);
+
+			await waitForPointCloudsLoaded();
+
+			createZones();
+			updateMaterialMenuOnStart();
+			updateZoneCount();
+
+			// Static title — no project-title lookup in the standalone build.
+			const titleEl = document.getElementById("viewer-title");
+			if (titleEl && window.viewerTitle) {
+				titleEl.innerHTML = `<span style="opacity:0.9">${window.viewerTitle}</span>`;
+				positionTitle();
+			}
+		})();
+
+	</script>
+
+</body>
+</html>
