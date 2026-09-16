@@ -47,7 +47,7 @@ async function initZones() {
     await waitForPointCloudsLoaded();
 
     const loaded = await autoLoadZonesJSON(window.zoneURL);
-    importEditsFromCSV(window.classificationURL);
+    importEditsAny(window.classificationURL);
     updateMaterialMenuOnStart();
     console.log("zones loaded?", loaded);
 

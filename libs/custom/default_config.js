@@ -57,14 +57,13 @@ async function loadAllAvailableDataTypes(doi) {
 	const oh3dLink = "https://openheritage3d.org/project.php?id=" + window.doi;
 
 
-
     const promises = dataTypes.map(type => loadPotreeIfExists(doi, type));
     await Promise.all(promises);   // runs all existence checks & loads in parallel
     
     console.log(window.zoneURL);
     autoLoadZonesJSON(window.zoneURL);
 
-    importEditsFromCSV(window.classificationURL);
+    importEditsAny(window.classificationURL);
     updateMaterialMenuOnStart();
     // Starting camera position
     // moveCameraTo(new THREE.Vector3(0,0,10), new THREE.Vector3(0,0,0));

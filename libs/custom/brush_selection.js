@@ -709,6 +709,236 @@ style.textContent += `
 }
 `;
 
+style.textContent += `
+
+/* ── Shortcut Guide (help overlay) ──────────────────────── */
+
+.brush-help-btn {
+    padding: 4px 9px;
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 6px;
+    background: rgba(255,255,255,0.06);
+    color: #aaa;
+    font-size: 12px;
+    font-weight: 700;
+    font-family: monospace;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    margin-right: 6px;
+}
+.brush-help-btn:hover {
+    background: rgba(79,70,229,0.25);
+    color: #c4c0ff;
+    border-color: rgba(79,70,229,0.4);
+}
+
+.brush-help-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    z-index: 10003;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.2s;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+}
+.brush-help-overlay.open { opacity: 1; }
+
+.brush-help {
+    width: clamp(320px, 82vw, 900px);
+    max-height: 86vh;
+    background: rgba(22, 22, 30, 0.92);
+    backdrop-filter: blur(16px) saturate(140%);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 14px;
+    box-shadow: 0 0 40px rgba(0,0,0,0.6);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    overflow: hidden;
+}
+
+.brush-help-body {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+.brush-help-body::-webkit-scrollbar { width: 5px; }
+.brush-help-body::-webkit-scrollbar-track { background: transparent; }
+.brush-help-body::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.15);
+    border-radius: 3px;
+}
+
+/* Keyboard diagram */
+
+.brush-help-kb {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 14px 10px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 10px;
+    flex-shrink: 0;
+}
+
+.brush-help-kbrow {
+    display: flex;
+    gap: 5px;
+    justify-content: center;
+}
+
+.brush-key {
+    min-width: 30px;
+    height: 30px;
+    padding: 0 7px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: #55555e;
+    font-family: monospace;
+    font-size: 12px;
+    font-weight: 600;
+    flex-shrink: 0;
+    transition: transform 0.12s, filter 0.12s;
+}
+
+.brush-key-brush {
+    background: rgba(79,70,229,0.28);
+    border-color: rgba(79,70,229,0.5);
+    color: #c4c0ff;
+}
+.brush-key-paint {
+    background: rgba(45,160,80,0.26);
+    border-color: rgba(55,180,95,0.5);
+    color: #9ce8b6;
+}
+.brush-key-image {
+    background: rgba(220,120,30,0.26);
+    border-color: rgba(240,140,40,0.5);
+    color: #ffcf9b;
+}
+
+.brush-key.hot,
+.brush-help-mouse .hot {
+    transform: translateY(-2px);
+    filter: brightness(1.5);
+}
+
+.brush-help-kbgap { width: 22px; }
+
+/* Mouse diagram + legend */
+
+.brush-help-cols {
+    display: flex;
+    align-items: flex-start;
+    gap: 18px;
+    flex-wrap: wrap;
+}
+
+.brush-help-mouse {
+    width: 132px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 14px 10px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 10px;
+}
+.brush-help-mouse svg { width: 82px; height: auto; }
+.brush-help-mouse .part { transition: filter 0.12s, transform 0.12s; }
+.brush-help-mouse .outline {
+    fill: none;
+    stroke: rgba(255,255,255,0.22);
+    stroke-width: 2;
+}
+.brush-help-mouse .divider {
+    stroke: rgba(255,255,255,0.18);
+    stroke-width: 2;
+}
+
+.brush-help-legend {
+    flex: 1;
+    min-width: 250px;
+    columns: 2 270px;
+    column-gap: 20px;
+}
+
+.brush-help-legend > div {
+    break-inside: avoid;
+    margin-bottom: 16px;
+}
+
+.brush-help-group-title {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: #888;
+    margin-bottom: 6px;
+}
+
+.brush-help-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.brush-help-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 8px;
+    border-radius: 7px;
+    transition: background 0.15s;
+}
+.brush-help-row:hover { background: rgba(255,255,255,0.06); }
+
+.brush-help-combo {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+    width: 140px;
+}
+
+.brush-help-plus {
+    color: #555;
+    font-size: 11px;
+}
+
+.brush-help-desc {
+    font-size: 13px;
+    color: #b4b4be;
+}
+
+.brush-help-foot {
+    font-size: 11px;
+    color: #666;
+    text-align: center;
+}
+`;
+
 // ══════════════════════════════════════════════════════════════
 //  LAS Classification Types
 // ══════════════════════════════════════════════════════════════
@@ -1478,7 +1708,7 @@ function buildMetadataBlock(format) {
     lines.push(`citation,${(window.projectCitation || "").replace(/[\r\n,]+/g, " ")}`);
     lines.push(`generated,${new Date().toISOString()}`);
     lines.push(`tile,${getTileIndexes()}`);
-    lines.push(`total_edits,${getTotalEditCount()}`);
+    // lines.push(`total_edits,${getTotalEditCount()}`);
     lines.push("#END_METADATA");
 
     if (classificationsAreCustom()) {
@@ -1497,7 +1727,7 @@ function downloadCSVLines(lines, kind) {
     const who  = getContributorName().replace(/[^\w\-]/g, "_");
     const tile = (getTileIndexes() || "").replace(/[^\w\-]/g, "_");
     const pcs  = [...brushEdits.keys()].join("_");
-    const parts = [pcs, getTotalEditCount() + "_edits", tile, who, kind].filter(Boolean);
+    const parts = [pcs, tile, who, kind].filter(Boolean);
 
     const a = document.createElement("a");
     a.href = url;
@@ -1534,12 +1764,28 @@ function exportBrowserCSV() {
     downloadCSVLines(lines, "browser");
 }
 
+function getNode(pointcloud, nodeName){
+    let node = pointcloud.pcoGeometry.root;
+
+    for (const c of nodeName.slice(1)){
+        node = node?.children?.[Number(c)];
+        if(!node) return null;
+    }
+    return node;
+}
+
+function getNodeNumPoints(pointcloud, nodeName){
+    const node = getNode(pointcloud, nodeName);
+    if(node) return node.numPoints;
+    else return null;
+}
+
 async function exportPythonCSV(onProgress) {
     const lines = buildMetadataBlock("python");
 
     // ── AABBs ── one line per implicit/hybrid region. No node load.
     lines.push("#AABBS");
-    lines.push("pc,node,classification,min_x,min_y,min_z,max_x,max_y,max_z");
+    lines.push("classification,min_x,min_y,min_z,max_x,max_y,max_z");
     for (const [pcName, pcEdits] of brushEdits) {
         const pc = viewer.scene.pointclouds.find(p => p.name === pcName);
         if (!pc) continue;
@@ -1551,9 +1797,9 @@ async function exportPythonCSV(onProgress) {
 
             const box = geoNode.boundingBox.clone().applyMatrix4(pc.matrixWorld);
             lines.push(
-                `${pcName},${nodeName},${entry.classification},` +
-                `${box.min.x},${box.min.y},${box.min.z},` +
-                `${box.max.x},${box.max.y},${box.max.z}`
+                `${entry.classification},` +
+                `${box.min.x.toFixed(6)},${box.min.y.toFixed(6)},${box.min.z.toFixed(6)},` +
+                `${box.max.x.toFixed(6)},${box.max.y.toFixed(6)},${box.max.z.toFixed(6)}`
             );
         }
     }
@@ -1597,7 +1843,7 @@ async function exportPythonCSV(onProgress) {
             for (const [pIndex, edit] of overrides) {
                 const ix = 3 * pIndex;
                 tmpPos.set(arr[ix], arr[ix+1], arr[ix+2]).applyMatrix4(matrixWorld);
-                lines.push(`${pcName},${edit.classification},${tmpPos.x},${tmpPos.y},${tmpPos.z}`);
+                lines.push(`${edit.classification},${tmpPos.x.toFixed(6)},${tmpPos.y.toFixed(6)},${tmpPos.z.toFixed(6)}`);
                 emitted++;
 
                 // Yield every 5k lines so the UI stays responsive
@@ -2940,6 +3186,262 @@ function formatRadius(r) {
 }
 
 // ══════════════════════════════════════════════════════════════
+//  Shortcut Guide
+//
+//  A read-only map of the bindings registered further down this file
+//  and in oriented_image_panel.js. It listens for nothing itself, so
+//  when a binding changes these tables must be edited to match.
+// ══════════════════════════════════════════════════════════════
+
+const HELP_GROUPS = [
+    {
+        title: "Brush",
+        color: "#6e6bff",
+        rows: [
+            { keys: ["Z"],                  desc: "Toggle the brush on / off" },
+            { keys: ["Q"],                  desc: "Shrink the brush radius" },
+            { keys: ["E"],                  desc: "Grow the brush radius" },
+            { keys: ["Ctrl/Cmd", "Scroll"], desc: "Resize the brush mid-stroke" },
+            { keys: ["W"],                  desc: "Cycle RGB / classification blend" },
+        ],
+    },
+    {
+        title: "Painting",
+        color: "#37b45f",
+        rows: [
+            { keys: ["Ctrl/Cmd", "Drag"],  desc: "Paint the selected class" },
+            { keys: ["Ctrl/Cmd", "Click"], desc: "Paint a single spot" },
+        ],
+    },
+    {
+        title: "Photos",
+        color: "#f08c28",
+        rows: [
+            { keys: ["Shift"],          desc: "Name the nearest photo to the cursor" },
+            { keys: ["Shift", "Click"], desc: "Jump into that photo's view" },
+            { keys: ["Esc"],            desc: "Leave photo view" },
+            { keys: ["←", "→"], sep: "/", desc: "Previous / next photo" },
+            { keys: ["Space"],          desc: "Hold to peek at the cloud behind" },
+            { keys: ["[", "]"], sep: "/", desc: "Nudge photo opacity down / up" },
+            { keys: ["W"],              desc: "Cycle photo opacity, in photo view" },
+        ],
+    },
+    {
+        title: "Camera",
+        color: "#8b8b96",
+        rows: [
+            { keys: ["Drag"],       desc: "Orbit" },
+            { keys: ["Right-drag"], desc: "Pan" },
+            { keys: ["Scroll"],     desc: "Zoom" },
+        ],
+    },
+];
+
+// Which tint each key wears on the diagram; anything absent stays dim.
+const HELP_KEY_GROUP = {
+    "Z": "brush", "Q": "brush", "E": "brush", "W": "brush",
+    "Ctrl": "paint", "Shift": "paint",
+    "Esc": "image", "[": "image", "]": "image",
+    "Space": "image", "←": "image", "→": "image",
+};
+
+const HELP_KB_ROWS = [
+    ["Esc"],
+    ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]"],
+    ["A", "S", "D", "F", "G", "H", "J", "K", "L"],
+    ["Z", "X", "C", "V", "B", "N", "M"],
+    [{ label: "Ctrl", width: 58 }, { label: "Space", width: 180 }, { label: "Shift", width: 58 },
+     { gap: true }, "←", "↑", "↓", "→"],
+];
+
+// Legend key label → the diagram element it lights up.
+const HELP_HK_TARGET = {
+    "Ctrl/Cmd":   "Ctrl",
+    "Drag":       "Mouse:left",
+    "Click":      "Mouse:left",
+    "Right-drag": "Mouse:right",
+    "Scroll":     "Mouse:wheel",
+};
+
+const HELP_MOUSE_SVG = `
+<svg viewBox="0 0 120 180">
+    <defs>
+        <clipPath id="brushHelpMouseClip">
+            <rect x="12" y="8" width="96" height="164" rx="46"/>
+        </clipPath>
+    </defs>
+    <g clip-path="url(#brushHelpMouseClip)">
+        <rect class="part" data-hk="Mouse:left"  x="12" y="8"  width="47" height="64"  fill="rgba(45,160,80,0.32)"/>
+        <rect class="part" data-hk="Mouse:right" x="61" y="8"  width="47" height="64"  fill="rgba(255,255,255,0.07)"/>
+        <rect                                    x="12" y="72" width="96" height="100" fill="rgba(255,255,255,0.04)"/>
+    </g>
+    <line class="divider" x1="60" y1="8"  x2="60"  y2="72"/>
+    <line class="divider" x1="12" y1="72" x2="108" y2="72"/>
+    <rect class="part" data-hk="Mouse:wheel" x="52" y="22" width="16" height="34" rx="8"
+          fill="rgba(79,70,229,0.6)" stroke="rgba(255,255,255,0.25)" stroke-width="1.5"/>
+    <rect class="outline" x="12" y="8" width="96" height="164" rx="46"/>
+</svg>`;
+
+function openShortcutsHelp() {
+    const existing = document.getElementById("brushHelpOverlay");
+    if (existing) {
+        existing.classList.remove("open");
+        setTimeout(() => existing.remove(), 200);
+        return;
+    }
+
+    const overlay = document.createElement("div");
+    overlay.id = "brushHelpOverlay";
+    overlay.className = "brush-help-overlay";
+
+    const card = document.createElement("div");
+    card.className = "brush-help";
+
+    // ── Header ──
+    const header = document.createElement("div");
+    header.className = "brush-editor-header";
+
+    const title = document.createElement("span");
+    title.className = "brush-editor-title";
+    title.textContent = "Keyboard & Mouse Shortcuts";
+    header.appendChild(title);
+
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "brush-close";
+    closeBtn.textContent = "×";
+    closeBtn.addEventListener("click", close);
+    header.appendChild(closeBtn);
+    card.appendChild(header);
+
+    const body = document.createElement("div");
+    body.className = "brush-help-body";
+
+    // ── Keyboard diagram ──
+    const kb = document.createElement("div");
+    kb.className = "brush-help-kb";
+
+    for (const row of HELP_KB_ROWS) {
+        const rowEl = document.createElement("div");
+        rowEl.className = "brush-help-kbrow";
+        if (row.length === 1) {
+            rowEl.style.alignSelf = "stretch";
+            rowEl.style.justifyContent = "flex-start";
+        }
+
+        for (const entry of row) {
+            if (entry.gap) {
+                const gap = document.createElement("span");
+                gap.className = "brush-help-kbgap";
+                rowEl.appendChild(gap);
+                continue;
+            }
+
+            const label = entry.label || entry;
+            const cap = document.createElement("span");
+            cap.className = "brush-key";
+            cap.dataset.hk = label;
+            cap.textContent = label;
+
+            const group = HELP_KEY_GROUP[label];
+            if (group) cap.classList.add(`brush-key-${group}`);
+            if (entry.width) cap.style.minWidth = `${entry.width}px`;
+
+            rowEl.appendChild(cap);
+        }
+        kb.appendChild(rowEl);
+    }
+    body.appendChild(kb);
+
+    // ── Mouse diagram + legend ──
+    const cols = document.createElement("div");
+    cols.className = "brush-help-cols";
+
+    const mouse = document.createElement("div");
+    mouse.className = "brush-help-mouse";
+    const mouseLabel = document.createElement("div");
+    mouseLabel.className = "brush-label";
+    mouseLabel.textContent = "Mouse";
+    mouse.appendChild(mouseLabel);
+    mouse.insertAdjacentHTML("beforeend", HELP_MOUSE_SVG);
+    cols.appendChild(mouse);
+
+    const legend = document.createElement("div");
+    legend.className = "brush-help-legend";
+
+    for (const group of HELP_GROUPS) {
+        const section = document.createElement("div");
+
+        const groupTitle = document.createElement("div");
+        groupTitle.className = "brush-help-group-title";
+        const dot = document.createElement("span");
+        dot.className = "brush-help-dot";
+        dot.style.background = group.color;
+        groupTitle.appendChild(dot);
+        groupTitle.appendChild(document.createTextNode(group.title));
+        section.appendChild(groupTitle);
+
+        for (const row of group.rows) {
+            const rowEl = document.createElement("div");
+            rowEl.className = "brush-help-row";
+
+            const combo = document.createElement("div");
+            combo.className = "brush-help-combo";
+            row.keys.forEach((key, i) => {
+                if (i > 0) {
+                    const sep = document.createElement("span");
+                    sep.className = "brush-help-plus";
+                    sep.textContent = row.sep || "+";
+                    combo.appendChild(sep);
+                }
+                const badge = document.createElement("span");
+                badge.className = "brush-hotkey";
+                badge.textContent = key;
+                combo.appendChild(badge);
+            });
+            rowEl.appendChild(combo);
+
+            const desc = document.createElement("span");
+            desc.className = "brush-help-desc";
+            desc.textContent = row.desc;
+            rowEl.appendChild(desc);
+
+            // Light up whatever this row names on the two diagrams.
+            const targets = row.keys.map(k => HELP_HK_TARGET[k] || k);
+            rowEl.addEventListener("mouseenter", () => setHelpHighlight(card, targets, true));
+            rowEl.addEventListener("mouseleave", () => setHelpHighlight(card, targets, false));
+
+            section.appendChild(rowEl);
+        }
+        legend.appendChild(section);
+    }
+    cols.appendChild(legend);
+    body.appendChild(cols);
+
+    const foot = document.createElement("div");
+    foot.className = "brush-help-foot";
+    foot.textContent = "Shortcuts pause while you are typing in a text field.";
+    body.appendChild(foot);
+
+    card.appendChild(body);
+    overlay.appendChild(card);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    document.body.appendChild(overlay);
+    requestAnimationFrame(() => overlay.classList.add("open"));
+
+    function close() {
+        overlay.classList.remove("open");
+        setTimeout(() => overlay.remove(), 200);
+    }
+}
+
+function setHelpHighlight(root, targets, on) {
+    for (const target of targets) {
+        const el = root.querySelector(`[data-hk="${CSS.escape(target)}"]`);
+        if (el) el.classList.toggle("hot", on);
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
 //  Panel Construction
 // ══════════════════════════════════════════════════════════════
 let firstLoad = true;
@@ -3002,6 +3504,13 @@ function openBrushPanel() {
     distBtn.addEventListener("click", openGridPanel);
     header.appendChild(distBtn);
 
+    const helpBtn = document.createElement("button");
+    helpBtn.className = "brush-help-btn";
+    helpBtn.title = "Keyboard & mouse shortcuts";
+    helpBtn.textContent = "?";
+    helpBtn.addEventListener("click", openShortcutsHelp);
+    header.appendChild(helpBtn);
+
     const closeBtn = document.createElement("button");
     // ... rest of closeBtn unchanged    const closeBtn = document.createElement("button");
     closeBtn.className = "brush-close";
@@ -3053,7 +3562,7 @@ function openBrushPanel() {
 
     const paintHint = document.createElement("div");
     paintHint.style.cssText = "font-size:12px; color:#777; text-align:center; margin-top:2px;";
-    paintHint.innerHTML = 'Hold <span class="brush-hotkey">Ctrl</span> + drag to paint';
+    paintHint.innerHTML = 'Hold <span class="brush-hotkey">Ctrl/Cmd</span> + drag to paint';
     panel.appendChild(paintHint);
 
     toggleRow.appendChild(toggle);
@@ -3272,7 +3781,7 @@ function openBrushPanel() {
 
     const radiusLabel = document.createElement("div");
     radiusLabel.className = "brush-label";
-    radiusLabel.innerHTML = 'Brush Radius <span class="brush-hotkey">Q</span> <span class="brush-hotkey">E</span>';
+    radiusLabel.innerHTML = 'Brush Radius <span class="brush-hotkey">Q</span> <span class="brush-hotkey">E</span> <span class="brush-hotkey">Ctrl+Scroll</span>';
     radiusSection.appendChild(radiusLabel);
 
     const sliderRow = document.createElement("div");
@@ -3285,6 +3794,13 @@ function openBrushPanel() {
     slider.max = "1";
     slider.step = "any";              // continuous — no stepping constraint
     slider.value = radiusToSlider(window.brushState.radius);
+
+    slider.addEventListener("input", () => {
+        const v = sliderToRadius(parseFloat(slider.value));
+        window.brushState.radius = v;
+        sliderValue.value = formatRadius(v);
+        if (brushState.sphere?.visible) brushState.sphere.scale.set(v, v, v);
+    });
 
     const sliderValue = document.createElement("input");
     sliderValue.type = "number";
@@ -3446,20 +3962,20 @@ function openBrushPanel() {
     const browserBtn = document.createElement("button");
     browserBtn.className = "brush-action-btn brush-btn-success";
     browserBtn.textContent = "Potree-Only Export";
-    browserBtn.title = "Fast ledger dump. For re-importing into the viewer.";
-    browserBtn.addEventListener("click", exportBrowserCSV);
+    browserBtn.title = "Fast ledger dump. Only for re-importing into the viewer.";
+    browserBtn.addEventListener("click", exportBrowserBinary);
 
     const pythonBtn = document.createElement("button");
     pythonBtn.className = "brush-action-btn brush-btn-success";
-    pythonBtn.textContent = "Full Export";
-    pythonBtn.title = "Full export with AABBs + positions for downstream LAS processing.";
+    pythonBtn.textContent = "World-Space Export";
+    pythonBtn.title = "World-space export with AABBs + positions for downstream LAS processing.";
     pythonBtn.addEventListener("click", async () => {
         const indicator = document.getElementById("brushStrokeIndicator");
         const label = indicator?.querySelector("span:not(.brush-stroke-spinner)");
         const orig  = label?.textContent;
         setStrokeIndicator(true);
         try {
-            await exportPythonCSV((done, total) => {
+            await exportWorldSpace((done, total) => {
                 if (label) label.textContent = `Writing overrides: ${done.toLocaleString()} / ${total.toLocaleString()}`;
             });
         } catch (e) {
@@ -3476,7 +3992,7 @@ function openBrushPanel() {
 
     // ── Secondary: Import / Refresh / Clear ──
     const secondaryRow = document.createElement("div");
-    secondaryRow.style.cssText = "display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px;";
+    secondaryRow.style.cssText = "display:grid; grid-template-columns:1fr 1fr; gap:6px;";
 
     const secondaryBase = `
         padding: 7px 8px;
@@ -3510,22 +4026,22 @@ function openBrushPanel() {
 
     secondaryRow.appendChild(makeSecondaryBtn(
         "Import", "rgba(79,70,229,0.25)", "#c4c0ff",
-        () => importEditsFromCSV()
+        () => importEditsAny()
     ));
     secondaryRow.appendChild(makeSecondaryBtn(
         "Refresh", "rgba(220,120,30,0.25)", "#fbbf77",
         applyEditsToLoadedNodes
     ));
-    secondaryRow.appendChild(makeSecondaryBtn(
-        "Clear", "rgba(220,38,38,0.25)", "#f87171",
-        () => {
-            if (getTotalEditCount() === 0) return;
-            if (confirm("Clear edit ledger? Visual state won't revert until page reload.")) {
-                brushEdits.clear();
-                updateEditCount();
-            }
-        }
-    ));
+    // secondaryRow.appendChild(makeSecondaryBtn(
+    //     "Clear", "rgba(220,38,38,0.25)", "#f87171",
+    //     () => {
+    //         if (getTotalEditCount() === 0) return;
+    //         if (confirm("Clear edit ledger? Visual state won't revert until page reload.")) {
+    //             brushEdits.clear();
+    //             updateEditCount();
+    //         }
+    //     }
+    // ));
     actions.appendChild(secondaryRow);
 
     panel.appendChild(actions);
@@ -3824,7 +4340,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.addEventListener('keydown', (e) => {
         if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
 
-        if (e.key === 'Control' && brushState.active) {
+        if ((e.key === 'Control' || e.key === 'Meta') && brushState.active) {
             brushState.painting = true;
             viewer.controls.rotationSpeed = 0;
         }
@@ -3870,7 +4386,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     document.addEventListener('keyup', (e) => {
-        if (e.key === 'Control') {
+        if (e.key === 'Control' || e.key === 'Meta') {
             brushState.painting = false;
             viewer.controls.rotationSpeed = 5;
         }

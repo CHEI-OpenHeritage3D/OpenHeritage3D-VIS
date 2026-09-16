@@ -906,36 +906,37 @@ async function applyLedgerEditsForTile(pointcloud, tileBox, maxDepth) {
     if (!pcEdits || pcEdits.size === 0) return;
 
     // Walk the octree and collect nodes that (a) intersect this tile,
-    // (b) are within the depth cap, and (c) actually have edits in the ledger.
+    // (b) are within the depth cap, and (c) need patching — either they
+    // have their own ledger entry, or they inherit an "all" baseline from
+    // an ancestor that was brushed at a coarser LOD. The inherited baseline
+    // is threaded down through the traversal instead of re-walking parent
+    // names per node (see getInheritedBaseline).
     const targets = [];
-    const stack = [pointcloud.pcoGeometry.root];
+    const stack = [{ node: pointcloud.pcoGeometry.root, inherited: null }];
     while (stack.length) {
-        const node = stack.pop();
+        const { node, inherited } = stack.pop();
         if (!node) continue;
         if (node.level > maxDepth) continue;
 
         const bbWorld = node.boundingBox.clone().applyMatrix4(pointcloud.matrixWorld);
         if (!bbWorld.intersectsBox(tileBox)) continue;
 
-        if (pcEdits.has(node.name)) targets.push(node);
+        const entry = pcEdits.get(node.name);
+        const baseline = isAllEntry(entry) ? entry.classification : inherited;
+
+        if (entry || baseline !== null) targets.push({ node, baseline, entry });
 
         if (node.level < maxDepth) {
-            for (let i = 0; i < 8; i++) if (node.children[i]) stack.push(node.children[i]);
+            for (let i = 0; i < 8; i++) if (node.children[i]) stack.push({ node: node.children[i], inherited: baseline });
         }
     }
     if (targets.length === 0) return;
 
     // Force-load any that aren't in memory yet, then patch.
-    await Promise.all(targets.map(n => waitForLoad(n)));
+    await Promise.all(targets.map(t => waitForLoad(t.node)));
 
-    for (const node of targets) {
-        const classAttr = node.geometry?.attributes?.classification;
-        if (!classAttr) continue;
-        const nodeEdits = pcEdits.get(node.name);
-        for (const [pIndex, edit] of nodeEdits) {
-            classAttr.array[pIndex] = edit.classification;
-        }
-        classAttr.needsUpdate = true;
+    for (const { node, baseline, entry } of targets) {
+        applyLedgerToNode(node, pcEdits, baseline, entry);
     }
 }
 
@@ -950,12 +951,8 @@ function instrumentSubtree(pointcloud, geoNode) {
 
     const apply = () => {
         const pcEdits = brushEdits.get(pointcloud.name);
-        const nodeEdits = pcEdits?.get(geoNode.name);
-        if (!nodeEdits) return;
-        const classAttr = geoNode.geometry?.attributes?.classification;
-        if (!classAttr) return;
-        for (const [pIndex, edit] of nodeEdits) classAttr.array[pIndex] = edit.classification;
-        classAttr.needsUpdate = true;
+        if (!pcEdits) return;
+        applyLedgerToNode(geoNode, pcEdits);
     };
 
     if (geoNode.loaded) apply();

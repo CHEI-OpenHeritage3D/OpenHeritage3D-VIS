@@ -182,7 +182,7 @@
 
 			// Creates Viewer
 			window.viewer = new Potree.Viewer(document.getElementById("potree_render_area"));
-			
+			viewer.renderer.setAnimationLoop(null);
 			viewer.setEDLEnabled(true);
 			viewer.useHQ = false;
 			viewer.setFOV(60);
@@ -232,6 +232,8 @@
 <script src="libs/custom/viewer_state_retainer.js"></script>
 <script src="libs/custom/zone_beacon_og.js"></script>
 <script src="libs/custom/brush_selection.js"></script>
+<script src="libs/custom/brush_binary_export.js"></script>
+<script src="libs/custom/brush_world_export.js"></script>
 <script src="libs/custom/oriented_image_panel.js"></script>
 	
 <script>
@@ -248,7 +250,7 @@
 		newScript.src = configURL;
 		
 		window.zoneURL = datasetPrefix + doi + "/potree/zones.json";
-		window.classificationURL = datasetPrefix + doi + "/potree/classification_edits.csv";
+		window.classificationURL = datasetPrefix + doi + "/potree/classification_edits.gz";
 
 
 		// tries to load config

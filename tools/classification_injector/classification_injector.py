@@ -6,40 +6,45 @@ Author: Aviral Agarwal
 ALERTCalifornia, Cultural Heritage Engineering Initiative (UC San Diego)
 
 Applies classification edits exported from the OH3D Potree brush tool
-to original LAS/LAZ files. Supports the two-tier edit format:
+to original LAS/LAZ files. Consumes the World-Space Export (#FORMAT,world-v1),
+plain or gzipped, and the older "python" format for backward compatibility.
+
+The edit file has two tiers:
 
   1. AABBs     - bulk regions where every point within a bounding box
-                 receives a uniform classification (from implicit ledger entries).
+                 receives a uniform classification (implicit ledger entries).
+                 Each carries the octree depth it came from.
   2. Overrides - individual points matched by world-space position via
-                 KD-tree nearest-neighbor lookup (from explicit/hybrid ledger entries).
+                 KD-tree nearest-neighbour lookup (explicit/hybrid entries).
 
-AABBs are applied first; overrides are applied second and take precedence.
-This mirrors the ledger semantics: implicit regions define a baseline,
-and per-point overrides correct boundary points on top.
+Application order: AABBs by ascending depth, then overrides. Depth ordering
+matters because a deeper region overrides the ancestor it sits inside, and
+the ledger routinely contains both. Sorting is done globally across all input
+files, not per file, so merged contributions apply the same way they render
+in the viewer.
 
-The brush tool's "Full Export" (CSV format "python") is the only export
-this script consumes. The "Browser Export" (CSV format "browser") has no
-world-space positions and is meant for re-importing into the viewer only;
-if pointed at a browser-format CSV, this script will skip it with a warning.
+The Potree ledger export (#FORMAT,browser* ) carries no world positions and
+cannot be applied here; this script skips it with a warning.
 
 Usage:
-    python classification_injector.py <las_path> <edits_csv> [options]
+    python classification_injector.py <las_path> <edits> [options]
 
     <las_path> can be a single .las/.laz file or a folder of tiles.
-    <edits_csv> can be a single CSV or a folder of CSVs (all are merged).
+    <edits>    can be a single .csv/.csv.gz or a folder of them (all merged).
 
 Examples:
-    python classification_injector.py ./las_tiles classification_edits.csv
-    python classification_injector.py ./las_tiles ./csv_folder
-    python classification_injector.py scan.las edits.csv --tolerance 0.05
-    python classification_injector.py ./las_tiles edits.csv --output-dir ./modified
-    python classification_injector.py ./las_tiles edits.csv --dry-run
+    python classification_injector.py ./las_tiles edits.csv.gz
+    python classification_injector.py ./las_tiles ./edit_folder
+    python classification_injector.py scan.las edits.csv.gz --tolerance 0.05
+    python classification_injector.py ./las_tiles edits.csv.gz --output-dir ./modified
+    python classification_injector.py ./las_tiles edits.csv.gz --dry-run
 
 Dependencies:
     pip install laspy numpy scipy
 """
 
 import argparse
+import gzip
 import sys
 import time
 from pathlib import Path
@@ -54,39 +59,43 @@ except ImportError as e:
     sys.exit(1)
 
 
+EDIT_SUFFIXES = (".csv", ".csv.gz", ".gz")
+
+
+def open_edits(path):
+    """Open a plain or gzipped edit file as text."""
+    if path.suffix == ".gz":
+        return gzip.open(path, mode="rt", encoding="utf-8-sig", newline="")
+    return open(path, mode="r", encoding="utf-8-sig", newline="")
+
+
 # ---------------------------------------------------------------
-#  Parse edits CSV ("python" / full-export format)
+#  Parse edit file
 # ---------------------------------------------------------------
 
-def parse_edits(csv_path):
-    """Parse a Full-Export CSV produced by the brush tool's exportPythonCSV().
-
-    Expected structure (section markers on their own line):
-        #FORMAT,python
-        #METADATA ... #END_METADATA
-        #CLASSIFICATIONS ... #END_CLASSIFICATIONS   (optional, ignored here)
-        #AABBS
-        pc,node,classification,min_x,min_y,min_z,max_x,max_y,max_z
-        ...
-        #END_AABBS
-        #OVERRIDES
-        pc,classification,x,y,z
-        ...
-        #END_OVERRIDES
+def parse_edits(path):
+    """Parse a World-Space Export.
 
     Returns:
-        aabbs:     list of dicts {pc, node, classification, min_xyz, max_xyz}
-        overrides: list of dicts {pc, classification, x, y, z}
+        aabbs:     list of (depth, classification, min_xyz, max_xyz)
+        overrides: (xyz float64 array of shape (n, 3), class uint8 array)
         metadata:  dict of metadata key-value pairs
+
+    Accepts both the current world-v1 layout and the older "python" layout,
+    distinguished by field count:
+
+        AABBs      world-v1: depth,class,minx,miny,minz,maxx,maxy,maxz   (8)
+                   python:   pc,node,class,minx,miny,minz,maxx,maxy,maxz (9)
+        Overrides  world-v1: class,x,y,z                                 (4)
+                   python:   pc,class,x,y,z                              (5)
     """
     aabbs = []
-    overrides = []
+    ov_cls, ov_x, ov_y, ov_z = [], [], [], []
     metadata = {}
 
     section = None          # None | "metadata" | "aabbs" | "overrides"
-    header_seen = False     # skip the column-header line in each section
 
-    with open(csv_path, mode="r", newline="", encoding="utf-8-sig") as f:
+    with open_edits(path) as f:
         for raw_line in f:
             line = raw_line.strip()
             if not line:
@@ -95,89 +104,69 @@ def parse_edits(csv_path):
             # -- Section markers --
             if line.startswith("#FORMAT,"):
                 fmt = line.split(",", 1)[1].strip()
-                if fmt == "browser":
-                    print(f"  Warning: {csv_path.name} is a browser-format CSV (no positions).")
-                    print(f"           Use the 'Full Export' from the brush panel instead.")
-                    return [], [], {}
+                if fmt.startswith("browser"):
+                    print(f"  Warning: {path.name} is a Potree ledger export (no world positions).")
+                    print(f"           Use the World-Space Export from the brush panel instead.")
+                    return [], (np.empty((0, 3)), np.empty(0, dtype=np.uint8)), {}
                 continue
-            if line == "#METADATA":
-                section = "metadata"
-                continue
-            if line == "#END_METADATA":
-                section = None
-                continue
-            if line == "#AABBS":
-                section = "aabbs"
-                header_seen = False
-                continue
-            if line == "#END_AABBS":
-                section = None
-                continue
-            if line == "#OVERRIDES":
-                section = "overrides"
-                header_seen = False
-                continue
-            if line == "#END_OVERRIDES":
-                section = None
-                continue
+            if line == "#METADATA":      section = "metadata";  continue
+            if line == "#END_METADATA":  section = None;        continue
+            if line == "#AABBS":         section = "aabbs";     continue
+            if line == "#END_AABBS":     section = None;        continue
+            if line == "#OVERRIDES":     section = "overrides"; continue
+            if line == "#END_OVERRIDES": section = None;        continue
 
-            # -- Skip comment lines (includes #CLASSIFICATIONS block) --
+            # -- Comments and the #CLASSIFICATIONS block --
             if line.startswith("#"):
                 continue
 
-            # -- Parse by section --
             if section == "metadata":
-                idx = line.index(",") if "," in line else -1
-                if idx != -1:
-                    metadata[line[:idx].strip()] = line[idx + 1:].strip()
+                if "," in line:
+                    key, _, value = line.partition(",")
+                    metadata[key.strip()] = value.strip()
                 continue
 
             if section == "aabbs":
-                if not header_seen:
-                    header_seen = True
-                    if line.startswith("pc,"):
-                        continue
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) < 9:
-                    continue
+                parts = line.split(",")
                 try:
-                    aabbs.append({
-                        "pc":             parts[0],
-                        "node":           parts[1],
-                        "classification": int(parts[2]),
-                        "min_xyz":        np.array([float(parts[3]), float(parts[4]), float(parts[5])]),
-                        "max_xyz":        np.array([float(parts[6]), float(parts[7]), float(parts[8])]),
-                    })
+                    if len(parts) >= 9:                 # legacy: pc,node,class,...
+                        depth = len(parts[1]) - 1       # node name encodes depth
+                        cls   = int(parts[2])
+                        nums  = [float(v) for v in parts[3:9]]
+                    elif len(parts) == 8:               # world-v1: depth,class,...
+                        depth = int(parts[0])
+                        cls   = int(parts[1])
+                        nums  = [float(v) for v in parts[2:8]]
+                    else:
+                        continue
                 except ValueError:
-                    continue
+                    continue                            # header row or malformed
+                aabbs.append((
+                    depth, cls,
+                    np.array(nums[0:3], dtype=np.float64),
+                    np.array(nums[3:6], dtype=np.float64),
+                ))
                 continue
 
             if section == "overrides":
-                if not header_seen:
-                    header_seen = True
-                    if line.startswith("pc,"):
-                        continue
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) < 5:
-                    continue
+                parts = line.split(",")
                 try:
-                    overrides.append({
-                        "pc":             parts[0],
-                        "classification": int(parts[1]),
-                        "x":              float(parts[2]),
-                        "y":              float(parts[3]),
-                        "z":              float(parts[4]),
-                    })
+                    if len(parts) >= 5:                 # legacy: pc,class,x,y,z
+                        cls = int(parts[1]); vals = parts[2:5]
+                    elif len(parts) == 4:               # world-v1: class,x,y,z
+                        cls = int(parts[0]); vals = parts[1:4]
+                    else:
+                        continue
+                    x, y, z = (float(v) for v in vals)
                 except ValueError:
-                    continue
+                    continue                            # header row or malformed
+                ov_cls.append(cls); ov_x.append(x); ov_y.append(y); ov_z.append(z)
                 continue
 
-            # Anything outside a recognized section is ignored (e.g. stray
-            # blank markers). The legacy pre-section browser dump format
-            # (bracketed pointcloud/node markers, no world positions) can't
-            # be converted to LAS edits at all, so it is not handled here.
-
-    return aabbs, overrides, metadata
+    xyz = (np.column_stack((ov_x, ov_y, ov_z)).astype(np.float64)
+           if ov_cls else np.empty((0, 3), dtype=np.float64))
+    cls = np.array(ov_cls, dtype=np.uint8) if ov_cls else np.empty(0, dtype=np.uint8)
+    return aabbs, (xyz, cls), metadata
 
 
 # ---------------------------------------------------------------
@@ -186,10 +175,11 @@ def parse_edits(csv_path):
 
 def apply_edits_to_file(las_path, aabbs, override_xyz, override_class,
                         tolerance, output_path, dry_run=False):
-    """Apply AABB bulk edits and per-point overrides to a single LAS file.
+    """Apply AABB bulk edits, then per-point overrides, to one LAS file.
 
-    AABBs are applied first (all points inside the box get the class).
-    Overrides are applied second and take precedence.
+    AABBs arrive pre-sorted shallow-to-deep, so applying them in order lets a
+    deeper region overwrite the ancestor containing it. Overrides go last and
+    take precedence over both.
 
     Returns (aabb_matched, override_matched, override_skipped, total_points).
     """
@@ -204,54 +194,64 @@ def apply_edits_to_file(las_path, aabbs, override_xyz, override_class,
     override_matched = 0
     override_skipped = 0
 
-    # -- Phase 1: AABBs (bulk regions) --
-    for aabb in aabbs:
-        # Quick reject: does the AABB overlap this file's extent at all?
-        if np.any(aabb["min_xyz"] > las_max) or np.any(aabb["max_xyz"] < las_min):
-            continue
+    classification = np.asarray(las.classification)
 
-        # Find all LAS points inside this AABB
-        inside = np.all(
-            (las_xyz >= aabb["min_xyz"]) & (las_xyz <= aabb["max_xyz"]),
-            axis=1
-        )
-        count = np.count_nonzero(inside)
-        if count == 0:
-            continue
+    # -- Phase 1: AABBs --
+    # Testing every AABB against every point is O(points x boxes), which at
+    # ~13k boxes and millions of points per tile is the dominant cost. Sorting
+    # the points once on X lets each box binary-search down to the slice that
+    # can possibly contain it, so only Y and Z are tested per candidate.
+    if aabbs:
+        order = np.argsort(las_xyz[:, 0], kind="stable")
+        xs = las_xyz[order, 0]
 
-        if not dry_run:
-            las.classification[inside] = aabb["classification"]
-        aabb_matched += count
+        for depth, cls, box_min, box_max in aabbs:
+            if np.any(box_min > las_max) or np.any(box_max < las_min):
+                continue
 
-    # -- Phase 2: Overrides (per-point, KD-tree) --
+            lo = np.searchsorted(xs, box_min[0], side="left")
+            hi = np.searchsorted(xs, box_max[0], side="right")
+            if hi <= lo:
+                continue
+
+            cand = order[lo:hi]
+            pts = las_xyz[cand]
+            inside = (
+                (pts[:, 1] >= box_min[1]) & (pts[:, 1] <= box_max[1]) &
+                (pts[:, 2] >= box_min[2]) & (pts[:, 2] <= box_max[2])
+            )
+            hits = cand[inside]
+            if hits.size == 0:
+                continue
+
+            if not dry_run:
+                classification[hits] = cls
+            aabb_matched += int(hits.size)
+
+    # -- Phase 2: Overrides --
     if len(override_xyz) > 0:
-        # Filter overrides to those within this file's bounds (+ tolerance)
         padded_min = las_min - tolerance
         padded_max = las_max + tolerance
         in_bounds = np.all(
             (override_xyz >= padded_min) & (override_xyz <= padded_max),
             axis=1
         )
-        candidate_indices = np.where(in_bounds)[0]
+        candidate_indices = np.flatnonzero(in_bounds)
 
-        if len(candidate_indices) > 0:
+        if candidate_indices.size > 0:
             tree = cKDTree(las_xyz)
-            candidate_xyz = override_xyz[candidate_indices]
-            candidate_class = override_class[candidate_indices]
+            distances, indices = tree.query(override_xyz[candidate_indices])
 
-            distances, indices = tree.query(candidate_xyz)
-
-            for i in range(len(candidate_indices)):
-                if distances[i] <= tolerance:
-                    if not dry_run:
-                        las.classification[indices[i]] = candidate_class[i]
-                    override_matched += 1
-                else:
-                    override_skipped += 1
+            ok = distances <= tolerance
+            if not dry_run and ok.any():
+                classification[indices[ok]] = override_class[candidate_indices][ok]
+            override_matched = int(ok.sum())
+            override_skipped = int((~ok).sum())
 
     # -- Write output --
     modified = aabb_matched > 0 or override_matched > 0
     if modified and not dry_run:
+        las.classification = classification
         las.write(str(output_path))
 
     return aabb_matched, override_matched, override_skipped, total_points
@@ -267,18 +267,18 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s ./las_tiles edits.csv
-  %(prog)s ./las_tiles ./csv_folder
-  %(prog)s ./las_tiles edits.csv --tolerance 0.05
-  %(prog)s ./las_tiles edits.csv --output-dir ./modified
-  %(prog)s ./las_tiles edits.csv --dry-run
+  %(prog)s ./las_tiles edits.csv.gz
+  %(prog)s ./las_tiles ./edit_folder
+  %(prog)s ./las_tiles edits.csv.gz --tolerance 0.05
+  %(prog)s ./las_tiles edits.csv.gz --output-dir ./modified
+  %(prog)s ./las_tiles edits.csv.gz --dry-run
         """
     )
 
     parser.add_argument("las_path", type=Path,
                         help="Single .las/.laz file or folder of tiles")
     parser.add_argument("edits_path", type=Path,
-                        help="Single CSV or folder of CSVs exported from the brush tool")
+                        help="Single .csv/.csv.gz or folder of them, exported from the brush tool")
     parser.add_argument("--tolerance", type=float, default=0.01,
                         help="Max distance (meters) to match an override to a LAS point (default: 0.01)")
     parser.add_argument("--output-dir", type=Path, default=None,
@@ -305,27 +305,32 @@ Examples:
         print(f"No .las or .laz files found in {args.las_path}")
         sys.exit(1)
 
-    # -- Find and parse CSV(s) --
+    # -- Find edit files --
     if args.edits_path.is_file():
-        csv_files = [args.edits_path]
+        edit_files = [args.edits_path]
     elif args.edits_path.is_dir():
-        csv_files = sorted(args.edits_path.glob("*.csv"))
+        edit_files = sorted(
+            p for p in args.edits_path.iterdir()
+            if p.is_file() and p.name.endswith(EDIT_SUFFIXES)
+        )
     else:
         print(f"Error: {args.edits_path} is not a file or directory.")
         sys.exit(1)
 
-    if not csv_files:
-        print(f"No .csv files found in {args.edits_path}")
+    if not edit_files:
+        print(f"No .csv or .csv.gz files found in {args.edits_path}")
         sys.exit(1)
 
     all_aabbs = []
-    all_overrides = []
+    xyz_parts, cls_parts = [], []
 
-    for csv_path in csv_files:
-        print(f"Parsing {csv_path.name}...")
-        aabbs, overrides, metadata = parse_edits(csv_path)
+    for path in edit_files:
+        print(f"Parsing {path.name}...")
+        aabbs, (xyz, cls), metadata = parse_edits(path)
         all_aabbs.extend(aabbs)
-        all_overrides.extend(overrides)
+        if len(xyz):
+            xyz_parts.append(xyz)
+            cls_parts.append(cls)
 
         contributor = metadata.get("contributor", "")
         tile = metadata.get("tile", "")
@@ -336,29 +341,29 @@ Examples:
             info_parts.append(f"tile {tile}")
         info = f" ({', '.join(info_parts)})" if info_parts else ""
 
-        print(f"  {len(aabbs)} AABB regions, {len(overrides)} point overrides{info}")
+        print(f"  {len(aabbs)} AABB regions, {len(xyz)} point overrides{info}")
 
-    if not all_aabbs and not all_overrides:
-        print("\nNo edits found across all CSVs.")
+    override_xyz = np.vstack(xyz_parts) if xyz_parts else np.empty((0, 3))
+    override_class = (np.concatenate(cls_parts) if cls_parts
+                      else np.empty(0, dtype=np.uint8))
+
+    if not all_aabbs and len(override_xyz) == 0:
+        print("\nNo edits found across all input files.")
         sys.exit(0)
 
-    # Prepare override arrays for vectorized operations
-    if all_overrides:
-        override_xyz = np.array([[o["x"], o["y"], o["z"]] for o in all_overrides])
-        override_class = np.array([o["classification"] for o in all_overrides], dtype=np.uint8)
-    else:
-        override_xyz = np.empty((0, 3))
-        override_class = np.empty(0, dtype=np.uint8)
+    # Global depth sort. Within one exported file the rows already arrive in
+    # this order, but merging several contributors concatenates their regions,
+    # and a shallow box from a later file must not overwrite a deeper one from
+    # an earlier file. Sorting here is what keeps the merge deterministic.
+    all_aabbs.sort(key=lambda a: a[0])
 
-    print(f"\nTotals: {len(all_aabbs)} AABB regions, {len(all_overrides)} point overrides")
+    print(f"\nTotals: {len(all_aabbs)} AABB regions, {len(override_xyz)} point overrides")
     print(f"Processing {len(las_files)} LAS file(s)...\n")
 
-    # -- Set up output directory --
     output_dir = args.output_dir
     if output_dir:
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    # -- Process each file --
     total_aabb = 0
     total_override = 0
     total_skipped = 0
@@ -369,10 +374,8 @@ Examples:
         print("-- DRY RUN (no files will be written) --\n")
 
     for las_path in las_files:
-        stem = las_path.stem
-        ext = las_path.suffix
         out_dir = output_dir or las_path.parent
-        output_path = out_dir / f"{stem}{args.suffix}{ext}"
+        output_path = out_dir / f"{las_path.stem}{args.suffix}{las_path.suffix}"
 
         aabb_matched, override_matched, override_skipped, num_points = apply_edits_to_file(
             las_path, all_aabbs, override_xyz, override_class,
@@ -383,10 +386,9 @@ Examples:
         total_override += override_matched
         total_skipped += override_skipped
 
-        modified = aabb_matched > 0 or override_matched > 0
-        if modified:
+        if aabb_matched > 0 or override_matched > 0:
             files_modified += 1
-            status = "WRITTEN" if not args.dry_run else "WOULD WRITE"
+            status = "WOULD WRITE" if args.dry_run else "WRITTEN"
             parts = []
             if aabb_matched:
                 parts.append(f"{aabb_matched:,} via AABB")
@@ -394,12 +396,10 @@ Examples:
                 parts.append(f"{override_matched:,} via override")
             if override_skipped:
                 parts.append(f"{override_skipped:,} skipped")
-            detail = ", ".join(parts)
-            print(f"  {las_path.name}: {detail} ({num_points:,} pts) -> {status}")
+            print(f"  {las_path.name}: {', '.join(parts)} ({num_points:,} pts) -> {status}")
         else:
             print(f"  {las_path.name}: no matching edits, skipped")
 
-    # -- Summary --
     elapsed = time.time() - start_time
     print(f"\n{'-' * 54}")
     print(f"  Files scanned:       {len(las_files)}")
@@ -418,3 +418,12 @@ Examples:
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------
+#  Note on AABB counting
+# ---------------------------------------------------------------
+# aabb_matched counts points touched, not points finally classified by an
+# AABB: a point inside nested regions is counted once per region, and a point
+# later corrected by an override is still counted here. The number is a
+# coverage indicator, not a partition of the cloud.
