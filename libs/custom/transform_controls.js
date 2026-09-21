@@ -292,6 +292,23 @@ function rotateAroundPointWithQuaternion(obj, point, q) {
     obj.quaternion.premultiply(q);
 }
 
+// Column-major identity, written out so this module does not touch THREE at
+// load time (it is an ES module; potree.js defines the global for it later).
+const _IDENTITY_ELEMENTS = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];
+const _warnedFrames = new Set();
+
+function warnIfParentTransformed(obj, label) {
+    if (!obj || !obj.parent || _warnedFrames.has(label)) return;
+    obj.parent.updateMatrixWorld();
+    const e = obj.parent.matrixWorld.elements;
+    if (e.some((v, i) => Math.abs(v - _IDENTITY_ELEMENTS[i]) > 1e-9)) {
+        _warnedFrames.add(label);
+        console.warn(`transform_controls: the ${label}'s parent has a non-identity `
+            + `world matrix. Gizmo deltas are applied in world space, so they will `
+            + `be skewed until this is converted through the parent frame.`);
+    }
+}
+
 function scaleAroundPoint(obj, point, deltaScale) {
     obj.position.sub(point); 
     obj.position.multiply(deltaScale);
@@ -309,9 +326,9 @@ function resetPCTransform (id) {
     pc.position.y = startingPC.position.y;
     pc.position.z = startingPC.position.z;
 
-    pc.quaternion.x = startingPC.quaternion.x;
-    pc.quaternion.y = startingPC.quaternion.y;
-    pc.quaternion.z = startingPC.quaternion.z;
+    // copy(), not x/y/z — the old version left the previous w in place, so a reset
+    // restored a non-unit quaternion and the cloud came back subtly skewed.
+    pc.quaternion.copy(startingPC.quaternion);
 
     pc.scale.x = startingPC.scale.x;
     pc.scale.y = startingPC.scale.y;
@@ -350,7 +367,14 @@ function toggleTransformControls(pc) {
         viewer.renderer.domElement
     );
 
-    control.rotation.set(viewer.scene.scene.rotation.x, viewer.scene.scene.rotation.y, viewer.scene.scene.rotation.z);
+    // The proxy hangs off viewer.scene.scene and the point clouds off
+    // viewer.scene.scenePointCloud. Both are untransformed THREE.Scene roots, so
+    // local == world for both and the deltas above need no parent conversion.
+    // (The line that used to sit here copied scene.scene.rotation onto the gizmo
+    // root, which is a no-op while that rotation is zero and double-applies if it
+    // ever is not.) Say so out loud if the assumption ever breaks.
+    warnIfParentTransformed(proxy, "proxy");
+    warnIfParentTransformed(pc, "point cloud");
     console.log('control: ',control);
 
     control.attach(proxy);
@@ -380,15 +404,27 @@ function toggleTransformControls(pc) {
         const proxyPosChange = proxyPos.sub(proxyInitPos);
         
         const currentQuat = proxy.quaternion.clone();
-        const deltaQuat = proxyInitQuat.clone().invert().multiply(currentQuat);
+        // TransformControls runs in world space (its `space` property defaults to
+        // "world") and writes  quaternion = delta_world * quaternionStart. The
+        // world-space delta is therefore current * start⁻¹ — a POST-multiply. The old
+        // start⁻¹ * current is the delta expressed in the proxy's own body frame,
+        // which was then applied below as though it were a world rotation. The two
+        // agree only while the proxy sits at identity, i.e. up to the first rotation.
+        const deltaQuat = currentQuat.clone()
+            .multiply(proxyInitQuat.clone().invert())
+            .normalize();
 
         const currentScale = proxy.scale.clone();
         const deltaScale = currentScale.divide(proxyInitScale);
 
 
-        pc.translateX(proxyPosChange.clone().x);
-        pc.translateY(proxyPosChange.clone().y);
-        pc.translateZ(proxyPosChange.clone().z);
+        // translateX/Y/Z move along the OBJECT'S OWN axes (they route through
+        // translateOnAxis, which applies obj.quaternion to the axis). Feeding them a
+        // world-space delta meant that once the cloud was rotated, dragging the X
+        // handle walked it along its own rotated X — the axes appeared welded to the
+        // object and one direction became unreachable. The gizmo delta is already
+        // world-space, so add it to the position directly.
+        pc.position.add(proxyPosChange);
 
         const pivot = proxy.position.clone();    // cube position
 
@@ -692,11 +728,12 @@ function updateTransformPanel(pc) {
         `Δx: ${dp.x.toFixed(3)}, Δy: ${dp.y.toFixed(3)}, Δz: ${dp.z.toFixed(3)}`;
 
     // ROTATION OFFSET (rad)
-    const dr_rad = {
-        x: (r.x - og.quaternion.x),
-        y: (r.y - og.quaternion.y),
-        z: (r.z - og.quaternion.z)
-    };
+    // The relative rotation since load, as Euler angles for display. Subtracting
+    // quaternion components from Euler radians (the old form) is not a rotation
+    // difference in any frame — it just happened to read as ~0 at startup.
+    const qRel = pc.quaternion.clone().multiply(og.quaternion.clone().invert());
+    const eRel = new THREE.Euler().setFromQuaternion(qRel.normalize(), "XYZ");
+    const dr_rad = { x: eRel.x, y: eRel.y, z: eRel.z };
 
     // ROTATION OFFSET (degrees)
     const dr = {

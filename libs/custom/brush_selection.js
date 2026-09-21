@@ -2655,17 +2655,148 @@ function setStrokeIndicator(active) {
 }
 
 function printImplicitExplicitNodes(){
-    let implicit = 0, explicit = 0;
+    const totals = {
+        pointclouds:     0,
+        entries:         0,
+        pureImplicit:    0,
+        hybrid:          0,
+        explicit:        0,
+        redundant:       0,
+        missingGeoNode:  0,
+        hybridOverrides: 0,
+        explicitPoints:  0,
+        implicitPoints:  0,
+        editedPoints:    0,
+        loadedNodes:     0,
+        hierarchyNodes:  0,
+        hierarchyPoints: 0,
+        cloudPoints:     0,
+    };
+    const rows = [];
+
     for(const pointcloud of viewer.scene.pointclouds) {
         const pcEdits = brushEdits.get(pointcloud.name);
         if(!pcEdits) continue;
+        totals.pointclouds++;
 
-        for(const [node, obj] of pcEdits){
-            if(obj instanceof Map) explicit++;
-            else implicit++;
+        // "all" baselines, so descendants covered by an ancestor aren't double-counted
+        const implicitNames = [];
+        for(const [nodeName, entry] of pcEdits){
+            if(isAllEntry(entry)) implicitNames.push(nodeName);
         }
+
+        const pc = {
+            name:            pointcloud.name,
+            entries:         pcEdits.size,
+            pureImplicit:    0,   // { all: true } with no per-point overrides
+            hybrid:          0,   // { all: true, overrides: Map }
+            explicit:        0,   // bare Map of per-point edits
+            redundant:       0,   // "all" node already covered by an "all" ancestor
+            missingGeoNode:  0,   // ledger entry whose octree node isn't in the hierarchy
+            hybridOverrides: 0,   // point entries living inside hybrid nodes
+            explicitPoints:  0,   // point entries living inside explicit Maps
+            implicitPoints:  0,   // points covered by non-redundant "all" subtrees
+            classes:         new Map(),
+        };
+
+        const bump = (cls, n) => pc.classes.set(cls, (pc.classes.get(cls) || 0) + n);
+
+        for(const [nodeName, entry] of pcEdits){
+            const overrides = getOverrides(entry);
+
+            if(!isAllEntry(entry)){
+                pc.explicit++;
+                pc.explicitPoints += entry.size;
+                for(const edit of entry.values()) bump(edit.classification, 1);
+                continue;
+            }
+
+            if(overrides && overrides.size > 0){
+                pc.hybrid++;
+                pc.hybridOverrides += overrides.size;
+                for(const edit of overrides.values()) bump(edit.classification, 1);
+            } else {
+                pc.pureImplicit++;
+            }
+
+            const coveredByAncestor = implicitNames.some(
+                n => n !== nodeName && nodeName.startsWith(n)
+            );
+            if(coveredByAncestor){ pc.redundant++; continue; }
+
+            const geoNode = findGeoNode(pointcloud.pcoGeometry.root, nodeName);
+            if(!geoNode){ pc.missingGeoNode++; continue; }
+
+            const subtreePoints = getNodePointCount(geoNode);
+            pc.implicitPoints += subtreePoints;
+            // overrides repaint points the baseline already counted
+            bump(entry.classification, subtreePoints - (overrides ? overrides.size : 0));
+        }
+
+        // Octree size, for context on how much of the cloud the ledger touches
+        let hierarchyNodes = 0, hierarchyPoints = 0;
+        (function walk(node){
+            if(!node) return;
+            hierarchyNodes++;
+            hierarchyPoints += node.numPoints || 0;
+            for(let i = 0; i < 8; i++) walk(node.children?.[i]);
+        })(pointcloud.pcoGeometry.root);
+
+        const cloudPoints = pointcloud.pcoGeometry?.loader?.metadata?.points
+                         ?? pointcloud.pcoGeometry?.numPoints
+                         ?? hierarchyPoints;
+
+        pc.pointEntries  = pc.hybridOverrides + pc.explicitPoints;
+        pc.editedPoints  = pc.implicitPoints + pc.explicitPoints;
+        pc.loadedNodes   = pointcloud.visibleNodes?.length || 0;
+        pc.hierarchyNodes  = hierarchyNodes;
+        pc.hierarchyPoints = hierarchyPoints;
+        pc.cloudPoints     = cloudPoints;
+        rows.push(pc);
+
+        totals.entries         += pc.entries;
+        totals.pureImplicit    += pc.pureImplicit;
+        totals.hybrid          += pc.hybrid;
+        totals.explicit        += pc.explicit;
+        totals.redundant       += pc.redundant;
+        totals.missingGeoNode  += pc.missingGeoNode;
+        totals.hybridOverrides += pc.hybridOverrides;
+        totals.explicitPoints  += pc.explicitPoints;
+        totals.implicitPoints  += pc.implicitPoints;
+        totals.editedPoints    += pc.editedPoints;
+        totals.loadedNodes     += pc.loadedNodes;
+        totals.hierarchyNodes  += hierarchyNodes;
+        totals.hierarchyPoints += hierarchyPoints;
+        totals.cloudPoints     += cloudPoints;
     }
-    console.log(`implicit (all/hybrid): ${implicit}, explicit (Map): ${explicit}`);
+
+    const n   = v => (v ?? 0).toLocaleString();
+    const pct = (a, b) => b > 0 ? `${(100 * a / b).toFixed(3)}%` : "n/a";
+
+    console.group("brush ledger stats");
+    for(const pc of rows){
+        console.group(pc.name);
+        console.log(`nodes:   ${n(pc.entries)} ledger entries — ${n(pc.pureImplicit)} pure implicit, ${n(pc.hybrid)} hybrid, ${n(pc.explicit)} explicit` +
+                    (pc.redundant ? `, ${n(pc.redundant)} redundant (ancestor-covered)` : "") +
+                    (pc.missingGeoNode ? `, ${n(pc.missingGeoNode)} unresolved in hierarchy` : ""));
+        console.log(`points:  ${n(pc.pointEntries)} stored point entries — ${n(pc.hybridOverrides)} hybrid overrides, ${n(pc.explicitPoints)} explicit`);
+        console.log(`edited:  ${n(pc.editedPoints)} points (${n(pc.implicitPoints)} implicit + ${n(pc.explicitPoints)} explicit) = ${pct(pc.editedPoints, pc.cloudPoints)} of cloud`);
+        console.log(`cloud:   ${n(pc.cloudPoints)} points total, ${n(pc.hierarchyPoints)} in loaded hierarchy across ${n(pc.hierarchyNodes)} nodes, ${n(pc.loadedNodes)} visible`);
+        if(pc.classes.size){
+            const byClass = [...pc.classes.entries()].sort((a, b) => b[1] - a[1])
+                .map(([cls, count]) => `${cls}: ${n(count)}`).join(", ");
+            console.log(`classes: ${byClass}`);
+        }
+        console.groupEnd();
+    }
+    if(rows.length === 0) console.log("no ledger entries");
+    console.log(`TOTAL across ${n(totals.pointclouds)} pointcloud(s): ` +
+                `${n(totals.entries)} entries (implicit ${n(totals.pureImplicit)} / hybrid ${n(totals.hybrid)} / explicit ${n(totals.explicit)}), ` +
+                `${n(totals.hybridOverrides + totals.explicitPoints)} point entries (${n(totals.hybridOverrides)} hybrid overrides), ` +
+                `${n(totals.editedPoints)} edited points of ${n(totals.cloudPoints)} (${pct(totals.editedPoints, totals.cloudPoints)})`);
+    console.groupEnd();
+
+    return totals;
 }
 
 

@@ -58190,7 +58190,7 @@ float getLOD(){
 		index3d = floor(index3d + 0.5);
 		int index = int(round(4.0 * index3d.x + 2.0 * index3d.y + index3d.z));
 		
-		vec4 value = texture2D(visibleNodes, vec2(float(iOffset) / 2048.0, 0.0));
+		vec4 value = texture2D(visibleNodes, vec2(float(iOffset) / 8192.0, 0.0));
 		int mask = int(round(value.r * 255.0));
 
 		if(isBitSet(mask, index)){
@@ -58230,7 +58230,7 @@ float getSpacing(){
 		index3d = floor(index3d + 0.5);
 		int index = int(round(4.0 * index3d.x + 2.0 * index3d.y + index3d.z));
 		
-		vec4 value = texture2D(visibleNodes, vec2(float(iOffset) / 2048.0, 0.0));
+		vec4 value = texture2D(visibleNodes, vec2(float(iOffset) / 8192.0, 0.0));
 		int mask = int(round(value.r * 255.0));
 		float spacingFactor = value.a;
 
@@ -58288,7 +58288,7 @@ float getLOD(){
 		
 	for(float i = 0.0; i <= 1000.0; i++){
 		
-		vec4 value = texture2D(visibleNodes, vec2(iOffset / 2048.0, 0.0));
+		vec4 value = texture2D(visibleNodes, vec2(iOffset / 8192.0, 0.0));
 		
 		int children = int(value.r * 255.0);
 		float next = value.g * 255.0;
@@ -59129,7 +59129,7 @@ float getLOD(){
 		index3d = floor(index3d + 0.5);
 		float index = 4.0 * index3d.x + 2.0 * index3d.y + index3d.z;
 		
-		vec4 value = texture2D(visibleNodes, vec2(iOffset / 2048.0, 0.0));
+		vec4 value = texture2D(visibleNodes, vec2(iOffset / 8192.0, 0.0));
 		float mask = value.r * 255.0;
 		if(isBitSet(mask, index)){
 			// there are more visible child nodes at this position
@@ -59509,7 +59509,11 @@ void main() {
 		constructor (parameters = {}) {
 			super();
 
-			this.visibleNodesTexture = Utils.generateDataTexture(2048, 1, new Color(0xffffff));
+			// OH3D: widened from 2048. The adaptive point-size path packs one texel per
+			// visible node; brushing force-loads deep leaf nodes, so the node count can
+			// pass 2048 long before the point budget is reached. Must stay in sync with
+			// the /8192.0 divisors in the getLOD/getSpacing shaders below.
+			this.visibleNodesTexture = Utils.generateDataTexture(8192, 1, new Color(0xffffff));
 			this.visibleNodesTexture.minFilter = NearestFilter;
 			this.visibleNodesTexture.magFilter = NearestFilter;
 
@@ -63845,7 +63849,19 @@ void main() {
 
 					const vnt = material.visibleNodesTexture;
 					const data = vnt.image.data;
-					data.set(visibilityTextureData.data);
+					const src = visibilityTextureData.data;
+					if(src.length > data.length){
+						// More visible nodes than the texture can describe. Truncating costs
+						// correct adaptive sizing for the tail nodes; throwing here killed the
+						// whole render loop, so degrade instead.
+						if(!Potree._vnTextureOverflowWarned){
+							Potree._vnTextureOverflowWarned = true;
+							console.warn(`visibleNodesTexture overflow: ${src.length / 4} visible nodes > ${data.length / 4} texels; adaptive point sizes will be approximate.`);
+						}
+						data.set(src.subarray(0, data.length));
+					}else {
+						data.set(src);
+					}
 					vnt.needsUpdate = true;
 
 				}
