@@ -187,13 +187,6 @@
 		// No archive license gate in the standalone build, so the download tool
 		// opens straight away. index.html instead sets this from the terms modal.
 		window.acceptedTerms = true;
-
-		Potree.loadPointCloud("https://pointcloud.ucsd.edu/archive_temp/oh3d_store/oh3d-vis/base_potree_template/lion_takanawa.copc.laz", "test", e => {
-			let pointcloud = e.pointcloud;
-			console.log(pointcloud);
-			viewer.scene.addPointCloud(pointcloud);
-		});
-
 </script>
 
 <!--
@@ -216,6 +209,8 @@
 <script src="libs/custom/viewer_state_retainer.js"></script>
 <script src="libs/custom/zone_beacon_og.js"></script>
 <script src="libs/custom/brush_selection.js"></script>
+<script src="libs/custom/brush_binary_export.js"></script>
+<script src="libs/custom/brush_world_export.js"></script>
 <script src="libs/custom/oriented_image_panel.js"></script>
 
 	<script>
