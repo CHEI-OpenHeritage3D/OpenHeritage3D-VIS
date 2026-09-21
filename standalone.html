@@ -188,6 +188,12 @@
 		// opens straight away. index.html instead sets this from the terms modal.
 		window.acceptedTerms = true;
 
+		Potree.loadPointCloud("https://pointcloud.ucsd.edu/archive_temp/oh3d_store/oh3d-vis/base_potree_template/lion_takanawa.copc.laz", "test", e => {
+			let pointcloud = e.pointcloud;
+			console.log(pointcloud);
+			viewer.scene.addPointCloud(pointcloud);
+		});
+
 </script>
 
 <!--

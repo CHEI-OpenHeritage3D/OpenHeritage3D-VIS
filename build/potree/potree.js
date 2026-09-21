@@ -57228,6 +57228,31 @@
 		static sphereFrom(b) {
 			return b.getBoundingSphere(new Sphere());
 		}
+
+		static toPotreeName([d, x, y, z]) {
+			var name = 'r';
+
+			for (var i = 0; i < d; ++i) {
+				var shift = d - i - 1;
+				var mask = 1 << shift;
+				var step = 0;
+
+				if (x & mask) step += 4;
+				if (y & mask) step += 2;
+				if (z & mask) step += 1;
+
+				name += step;
+			}
+
+			return name;
+		}
+
+		static maybeSrs(srs) {
+			try { 
+				proj4(srs); 
+				return srs
+			} catch (e) {}
+		}
 	};
 
 	class PointCloudEptGeometry {
@@ -57553,28 +57578,19 @@
 
 	PointCloudEptGeometryNode.IDCount = 0;
 
-	// COPC support ported from upstream potree/potree develop (5636cd4, src/PointCloudEptGeometry.js).
-	// Upstream's BaseGeometry is folded into PointCloudCopcGeometry since this bundle's EPT
-	// classes predate that refactor. Requires libs/copc/index.js (window.Copc) on the page.
-	class PointCloudCopcGeometry {
-		static parse({ header, info, wkt }) {
-			return {
-				cube: info.cube,
-				boundsConforming: [...header.min, ...header.max],
-				spacing: info.spacing,
-				srs: wkt,
-			}
-		}
-
-		constructor(getter, copc) {
-			const { cube, boundsConforming, spacing, srs } = PointCloudCopcGeometry.parse(copc);
-
-			this.type = 'copc';
-			this.getter = getter;
-			this.copc = copc;
-			this.pages = { '0-0-0-0': copc.info.rootHierarchyPage };
-
+	// COPC support copied from Potree 1.8.2 (build/potree/potree_1.8.2.js; identical to
+	// potree/potree tag 1.8.2 sources). 1.8.2 also rebuilt PointCloudEptGeometry on
+	// BaseGeometry; that part is not ported, so this bundle's EPT classes are unchanged.
+	// Requires libs/copc/index.js (window.Copc) on the page.
+	class BaseGeometry {
+		constructor({ 
+			cube,
+			boundsConforming,
+			spacing,
+			srs,
+		}) {
 			this.cube = cube;
+
 			this.boundingBox = U.toBox3(cube);
 			this.tightBoundingBox = U.toBox3(boundsConforming);
 			this.boundingSphere = U.sphereFrom(this.boundingBox);
@@ -57582,7 +57598,7 @@
 			this.offset = U.toVector3([0, 0, 0]);
 			this.version = new Potree.Version('1.7');
 
-			this.loader = new CopcLaszipLoader();
+			this.loader = new Potree.CopcLaszipLoader();
 
 			this.spacing = spacing;
 			this.projection = srs || null;
@@ -57604,11 +57620,33 @@
 			attributes.add(new PointAttribute("source id", PointAttributeTypes.DATA_TYPE_UINT16, 1));
 			this.pointAttributes = attributes;
 		}
+	}
+
+	class PointCloudCopcGeometry extends BaseGeometry {
+		static parse({ header, info, wkt }) {
+			return {
+				cube: info.cube,
+				boundsConforming: [...header.min, ...header.max],
+				spacing: info.spacing,
+				srs: wkt,
+			}
+		}
+
+		constructor(getter, copc) {
+			super(PointCloudCopcGeometry.parse(copc));
+
+			this.type = 'copc';
+			this.getter = getter;
+			this.copc = copc;
+			this.pages = { '0-0-0-0': copc.info.rootHierarchyPage };
+
+			this.loader = new Potree.CopcLaszipLoader();
+		}
 
 		async loadHierarchyPage(key) {
 			const { Copc, Key } = window.Copc;
 			const page = this.pages[Key.toString(key)];
-			return Copc.loadHierarchyPage(this.getter, page);
+			return Copc.loadHierarchyPage(this.getter, page)
 		}
 	};
 
@@ -57616,7 +57654,7 @@
 		constructor(owner, key, bounds) {
 			super();
 
-			const { Key } = window.Copc;
+			const { Key } = Copc;
 
 			this.owner = owner;
 			this.key = key || Key.create(0, 0, 0, 0);
@@ -57640,26 +57678,8 @@
 			this.loading = false;
 			this.oneTimeDisposeHandlers = [];
 
-			this.name = PointCloudCopcGeometryNode.toPotreeName(this.key);
+			this.name = U.toPotreeName(this.key);
 			this.index = parseInt(this.name.charAt(this.name.length - 1));
-		}
-
-		static toPotreeName([d, x, y, z]) {
-			let name = 'r';
-
-			for (let i = 0; i < d; ++i) {
-				const shift = d - i - 1;
-				const mask = 1 << shift;
-				let step = 0;
-
-				if (x & mask) step += 4;
-				if (y & mask) step += 2;
-				if (z & mask) step += 1;
-
-				name += step;
-			}
-
-			return name;
 		}
 
 		isGeometryNode() { return true; }
@@ -57668,8 +57688,8 @@
 		isLoaded() { return this.loaded; }
 		getBoundingSphere() { return this.boundingSphere; }
 		getBoundingBox() { return this.boundingBox; }
-		getNumPoints() {
-			return this.nodeinfo ? this.nodeinfo.pointCount : -1;
+		getNumPoints() { 
+			return this.nodeinfo ? this.nodeinfo.pointCount : -1; 
 		}
 
 		getChildren() {
@@ -57696,7 +57716,7 @@
 			this.loading = true;
 			++Potree.numNodesLoading;
 
-			// Not in upstream: a failed hierarchy or point fetch left the node stuck in
+			// Not in 1.8.2: a failed hierarchy or point fetch left the node stuck in
 			// `loading` with its slot held, so a few network errors stalled all loading.
 			// Release the slot so Potree retries, as the 2.0 NodeLoader does.
 			try {
@@ -57723,7 +57743,7 @@
 
 			const { nodes, pages } = await this.owner.loadHierarchyPage(this.key);
 
-			// Since we want to traverse top-down, and 10 comes lexicographically
+			// Since we want to traverse top-down, and 10 comes lexicographically 
 			// before 9 (for example), do a deep sort.
 			const keys = Object.keys({ ...nodes, ...pages })
 				.map(Key.create)
@@ -57745,9 +57765,9 @@
 				parentNode.hasChildren = true;
 
 				const bounds = Bounds.step(parentNode.bounds, step);
-				const node = new PointCloudCopcGeometryNode(
+				const node = new Potree.PointCloudCopcGeometryNode(
 					this.owner,
-					key,
+					key, 
 					bounds);
 				parentNode.addChild(node);
 				nodemap[keyname] = node;
@@ -57756,9 +57776,11 @@
 				const nodeinfo = nodes[keyname];
 				if (nodeinfo) node.nodeinfo = nodeinfo;
 
-				// And for leaf nodes whose data is in a different hierarchy page,
-				// store the info for the hierarchy page in our page map, since we
-				// need hierarchy page ranges to fetch them.
+				// And for leaf nodes whose data is in a different hierarchy page, 
+				// store the info for the hierarchy page in our page map.  This is
+				// only applicable for COPC data since we need hierarchy page 
+				// ranges to fetch them - EPT data on the other hand we just need
+				// the node key to fetch the file.
 				const pageinfo = pages[keyname];
 				if (this.owner.pages && pageinfo) {
 					this.owner.pages[keyname] = pageinfo;
@@ -67622,9 +67644,10 @@ void main() {
 		}
 	};
 
-	// Ported from upstream potree/potree develop (src/loader/EptLoader.js).
+	// Copied from Potree 1.8.2 (CopcLoader).
 	class CopcLoader {
 		static async load(file, callback) {
+			// Not in 1.8.2: fail with a clear message if copc.js isn't on the page.
 			if (!window.Copc) {
 				console.error('COPC support requires libs/copc/index.js to be loaded before potree.js');
 				callback(undefined);
@@ -67633,21 +67656,21 @@ void main() {
 
 			const { Copc, Getter } = window.Copc;
 
-			// Not in upstream: surface a bad URL / non-COPC file through the caller's
+			// Not in 1.8.2: surface a bad URL / non-COPC file through the caller's
 			// "failed to load" path instead of an unhandled rejection.
 			let geometry;
 			try {
-				const getter = Getter.http(file);
+				const url = file;
+				const getter = Getter.http(url);
 				const copc = await Copc.create(getter);
 
-				geometry = new PointCloudCopcGeometry(getter, copc);
+				geometry = new Potree.PointCloudCopcGeometry(getter, copc);
 			} catch (e) {
 				console.error(e);
 				callback(undefined);
 				return;
 			}
-
-			let root = new PointCloudCopcGeometryNode(geometry);
+			let root = new Potree.PointCloudCopcGeometryNode(geometry);
 
 			geometry.root = root;
 			geometry.root.load();
@@ -67938,9 +67961,9 @@ void main() {
 		};
 	};
 
-	// Ported from upstream potree/potree develop (src/loader/ept/LaszipLoader.js).
-	// Upstream renamed its EPT batcher/worker to this protocol; here they get COPC-specific
-	// names so the existing EptLazBatcher / EptLaszipDecoderWorker.js stay untouched.
+	// Copied from Potree 1.8.2 (CopcLaszipLoader, EptLazBatcher). 1.8.2's EptLazBatcher and
+	// EptLaszipDecoderWorker.js use a new message format that this bundle's EPT loader
+	// doesn't speak, so here they're named CopcLazBatcher / CopcLaszipDecoderWorker.js.
 	class CopcLaszipLoader {
 		async load(node) {
 			if (node.loaded) return;
@@ -67949,16 +67972,17 @@ void main() {
 			// however we must split things out a bit to accommodate the expensive
 			// calls to go in the worker.  So in this non-worker context, we just
 			// isolate the compressed data buffer, which is passed to the worker.
-			// The time-consuming decompression and extracting the data into
+			// The time-consuming decompression and extracting the data into 
 			// GPU-compatible buffers happens in the worker.
 			const { pointCount, pointDataOffset, pointDataLength } = node.nodeinfo;
 
 			// Note that COPC explicitly allows nodes to exist with no data.  They
 			// may have children, but there is no point cloud data.  Make sure we
 			// don't try to fetch a slice of point data in this case.
+			// (In the potree/potree 1.8.2 source tag, but missing from the prebuilt 1.8.2 bundle.)
 			if (!pointCount) return this.parse(node, new ArrayBuffer());
 			const compressed = await node.owner.getter(
-				pointDataOffset,
+				pointDataOffset, 
 				pointDataOffset + pointDataLength);
 			this.parse(node, compressed.buffer);
 		}
@@ -67997,7 +68021,7 @@ void main() {
 
 				let positions = new Float32Array(e.data.position);
 				let colors = new Uint8Array(e.data.color);
-
+				
 				let intensities = new Float32Array(e.data.intensity);
 				let classifications = new Uint8Array(e.data.classification);
 				let returnNumbers = new Uint8Array(e.data.returnNumber);
