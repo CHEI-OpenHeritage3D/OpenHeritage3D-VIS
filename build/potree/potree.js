@@ -57553,6 +57553,248 @@
 
 	PointCloudEptGeometryNode.IDCount = 0;
 
+	// COPC support ported from upstream potree/potree develop (5636cd4, src/PointCloudEptGeometry.js).
+	// Upstream's BaseGeometry is folded into PointCloudCopcGeometry since this bundle's EPT
+	// classes predate that refactor. Requires libs/copc/index.js (window.Copc) on the page.
+	class PointCloudCopcGeometry {
+		static parse({ header, info, wkt }) {
+			return {
+				cube: info.cube,
+				boundsConforming: [...header.min, ...header.max],
+				spacing: info.spacing,
+				srs: wkt,
+			}
+		}
+
+		constructor(getter, copc) {
+			const { cube, boundsConforming, spacing, srs } = PointCloudCopcGeometry.parse(copc);
+
+			this.type = 'copc';
+			this.getter = getter;
+			this.copc = copc;
+			this.pages = { '0-0-0-0': copc.info.rootHierarchyPage };
+
+			this.cube = cube;
+			this.boundingBox = U.toBox3(cube);
+			this.tightBoundingBox = U.toBox3(boundsConforming);
+			this.boundingSphere = U.sphereFrom(this.boundingBox);
+			this.tightBoundingSphere = U.sphereFrom(this.tightBoundingBox);
+			this.offset = U.toVector3([0, 0, 0]);
+			this.version = new Potree.Version('1.7');
+
+			this.loader = new CopcLaszipLoader();
+
+			this.spacing = spacing;
+			this.projection = srs || null;
+			try {
+				proj4(this.projection);
+			} catch(e) {
+				this.projection = null;
+			}
+
+			const attributes = new PointAttributes();
+			attributes.add(PointAttribute.POSITION_CARTESIAN);
+			attributes.add(new PointAttribute("rgba", PointAttributeTypes.DATA_TYPE_UINT8, 4));
+			attributes.add(new PointAttribute("intensity", PointAttributeTypes.DATA_TYPE_UINT16, 1));
+			attributes.add(new PointAttribute("classification", PointAttributeTypes.DATA_TYPE_UINT8, 1));
+			attributes.add(new PointAttribute("gps-time", PointAttributeTypes.DATA_TYPE_FLOAT, 1));
+			attributes.add(new PointAttribute("returnNumber", PointAttributeTypes.DATA_TYPE_UINT8, 1));
+			attributes.add(new PointAttribute("number of returns", PointAttributeTypes.DATA_TYPE_UINT8, 1));
+			attributes.add(new PointAttribute("return number", PointAttributeTypes.DATA_TYPE_UINT8, 1));
+			attributes.add(new PointAttribute("source id", PointAttributeTypes.DATA_TYPE_UINT16, 1));
+			this.pointAttributes = attributes;
+		}
+
+		async loadHierarchyPage(key) {
+			const { Copc, Key } = window.Copc;
+			const page = this.pages[Key.toString(key)];
+			return Copc.loadHierarchyPage(this.getter, page);
+		}
+	};
+
+	class PointCloudCopcGeometryNode extends PointCloudTreeNode {
+		constructor(owner, key, bounds) {
+			super();
+
+			const { Key } = window.Copc;
+
+			this.owner = owner;
+			this.key = key || Key.create(0, 0, 0, 0);
+			this.bounds = bounds || owner.cube;
+
+			this.id = PointCloudCopcGeometryNode.IDCount++;
+			this.geometry = null;
+			this.boundingBox = U.toBox3(this.bounds);
+			this.tightBoundingBox = this.boundingBox;
+			this.spacing = this.owner.spacing / Math.pow(2, Key.depth(this.key));
+			this.boundingSphere = U.sphereFrom(this.boundingBox);
+
+			// These are set during hierarchy loading.
+			this.hasChildren = false;
+			this.children = { };
+			this.nodeinfo = undefined;
+			this.numPoints = -1;
+
+			this.level = Key.depth(this.key);
+			this.loaded = false;
+			this.loading = false;
+			this.oneTimeDisposeHandlers = [];
+
+			this.name = PointCloudCopcGeometryNode.toPotreeName(this.key);
+			this.index = parseInt(this.name.charAt(this.name.length - 1));
+		}
+
+		static toPotreeName([d, x, y, z]) {
+			let name = 'r';
+
+			for (let i = 0; i < d; ++i) {
+				const shift = d - i - 1;
+				const mask = 1 << shift;
+				let step = 0;
+
+				if (x & mask) step += 4;
+				if (y & mask) step += 2;
+				if (z & mask) step += 1;
+
+				name += step;
+			}
+
+			return name;
+		}
+
+		isGeometryNode() { return true; }
+		getLevel() { return this.level; }
+		isTreeNode() { return false; }
+		isLoaded() { return this.loaded; }
+		getBoundingSphere() { return this.boundingSphere; }
+		getBoundingBox() { return this.boundingBox; }
+		getNumPoints() {
+			return this.nodeinfo ? this.nodeinfo.pointCount : -1;
+		}
+
+		getChildren() {
+			let children = [];
+
+			for (let i = 0; i < 8; i++) {
+				if (this.children[i]) {
+					children.push(this.children[i]);
+				}
+			}
+
+			return children;
+		}
+
+		addChild(child) {
+			this.children[child.index] = child;
+			child.parent = this;
+		}
+
+		async load() {
+			if (this.loaded || this.loading) return;
+			if (Potree.numNodesLoading >= Potree.maxNodesLoading) return;
+
+			this.loading = true;
+			++Potree.numNodesLoading;
+
+			// Not in upstream: a failed hierarchy or point fetch left the node stuck in
+			// `loading` with its slot held, so a few network errors stalled all loading.
+			// Release the slot so Potree retries, as the 2.0 NodeLoader does.
+			try {
+				if (!this.nodeinfo) await this.loadHierarchy();
+				await this.loadPoints();
+			} catch (e) {
+				this.loading = false;
+				--Potree.numNodesLoading;
+				console.error(`failed to load COPC node ${this.name}`, e);
+			}
+		}
+
+		loadPoints(){
+			return this.owner.loader.load(this);
+		}
+
+		async loadHierarchy() {
+			const { Bounds, Key } = window.Copc;
+			const ourkeyname = Key.toString(this.key);
+
+			let nodemap = { };
+			nodemap[ourkeyname] = this;
+			this.hasChildren = false;
+
+			const { nodes, pages } = await this.owner.loadHierarchyPage(this.key);
+
+			// Since we want to traverse top-down, and 10 comes lexicographically
+			// before 9 (for example), do a deep sort.
+			const keys = Object.keys({ ...nodes, ...pages })
+				.map(Key.create)
+				.sort(Key.compare);
+
+			keys.forEach((key) => {
+				const keyname = Key.toString(key);
+				if (keyname === ourkeyname) {
+					this.nodeinfo = nodes[keyname];
+					return;
+				}
+
+				const [_d, x, y, z] = key;
+				const step = [x & 1, y & 1, z & 1];
+
+				let parentName = Key.toString(Key.up(key));
+				let parentNode = nodemap[parentName];
+				if (!parentNode) return;
+				parentNode.hasChildren = true;
+
+				const bounds = Bounds.step(parentNode.bounds, step);
+				const node = new PointCloudCopcGeometryNode(
+					this.owner,
+					key,
+					bounds);
+				parentNode.addChild(node);
+				nodemap[keyname] = node;
+
+				// For data nodes, add their point data offset/point counts.
+				const nodeinfo = nodes[keyname];
+				if (nodeinfo) node.nodeinfo = nodeinfo;
+
+				// And for leaf nodes whose data is in a different hierarchy page,
+				// store the info for the hierarchy page in our page map, since we
+				// need hierarchy page ranges to fetch them.
+				const pageinfo = pages[keyname];
+				if (this.owner.pages && pageinfo) {
+					this.owner.pages[keyname] = pageinfo;
+				}
+			});
+		}
+
+		doneLoading(bufferGeometry, tightBoundingBox, np, mean) {
+			bufferGeometry.boundingBox = this.boundingBox;
+			this.geometry = bufferGeometry;
+			this.tightBoundingBox = tightBoundingBox;
+			this.numPoints = np;
+			this.mean = mean;
+			this.loaded = true;
+			this.loading = false;
+			--Potree.numNodesLoading;
+		}
+
+		dispose() {
+			if (this.geometry && this.parent) {
+				this.geometry.dispose();
+				this.geometry = null;
+				this.loaded = false;
+
+				// this.dispatchEvent( { type: 'dispose' } );
+				for (let i = 0; i < this.oneTimeDisposeHandlers.length; i++) {
+					let handler = this.oneTimeDisposeHandlers[i];
+					handler();
+				}
+				this.oneTimeDisposeHandlers = [];
+			}
+		}
+	}
+
+	PointCloudCopcGeometryNode.IDCount = 0;
+
 	class PointCloudOctreeGeometry{
 
 		constructor(){
@@ -67380,6 +67622,40 @@ void main() {
 		}
 	};
 
+	// Ported from upstream potree/potree develop (src/loader/EptLoader.js).
+	class CopcLoader {
+		static async load(file, callback) {
+			if (!window.Copc) {
+				console.error('COPC support requires libs/copc/index.js to be loaded before potree.js');
+				callback(undefined);
+				return;
+			}
+
+			const { Copc, Getter } = window.Copc;
+
+			// Not in upstream: surface a bad URL / non-COPC file through the caller's
+			// "failed to load" path instead of an unhandled rejection.
+			let geometry;
+			try {
+				const getter = Getter.http(file);
+				const copc = await Copc.create(getter);
+
+				geometry = new PointCloudCopcGeometry(getter, copc);
+			} catch (e) {
+				console.error(e);
+				callback(undefined);
+				return;
+			}
+
+			let root = new PointCloudCopcGeometryNode(geometry);
+
+			geometry.root = root;
+			geometry.root.load();
+
+			callback(geometry);
+		}
+	}
+
 	class EptBinaryLoader {
 		extension() {
 			return '.bin';
@@ -67659,6 +67935,130 @@ void main() {
 			};
 
 			worker.postMessage(message, [message.buffer]);
+		};
+	};
+
+	// Ported from upstream potree/potree develop (src/loader/ept/LaszipLoader.js).
+	// Upstream renamed its EPT batcher/worker to this protocol; here they get COPC-specific
+	// names so the existing EptLazBatcher / EptLaszipDecoderWorker.js stay untouched.
+	class CopcLaszipLoader {
+		async load(node) {
+			if (node.loaded) return;
+
+			// There are utilities to do all of this in one async call via copc.js,
+			// however we must split things out a bit to accommodate the expensive
+			// calls to go in the worker.  So in this non-worker context, we just
+			// isolate the compressed data buffer, which is passed to the worker.
+			// The time-consuming decompression and extracting the data into
+			// GPU-compatible buffers happens in the worker.
+			const { pointCount, pointDataOffset, pointDataLength } = node.nodeinfo;
+
+			// Note that COPC explicitly allows nodes to exist with no data.  They
+			// may have children, but there is no point cloud data.  Make sure we
+			// don't try to fetch a slice of point data in this case.
+			if (!pointCount) return this.parse(node, new ArrayBuffer());
+			const compressed = await node.owner.getter(
+				pointDataOffset,
+				pointDataOffset + pointDataLength);
+			this.parse(node, compressed.buffer);
+		}
+
+		async parse(node, compressed) {
+			let handler = new CopcLazBatcher(node);
+
+			try {
+				handler.push({
+					isFullFile: false,
+					compressed,
+					header: node.owner.copc.header,
+					eb: node.owner.copc.eb,
+					pointCount: node.nodeinfo.pointCount,
+					nodemin: node.bounds.slice(0, 3),
+				});
+			} catch (e) {
+				console.log('Failed:', e);
+			}
+		}
+	};
+
+	class CopcLazBatcher {
+		constructor(node) { this.node = node; }
+
+		push(las) {
+			const { isFullFile, compressed, header, eb, pointCount, nodemin } = las;
+
+			let workerPath = Potree.scriptPath +
+				'/workers/CopcLaszipDecoderWorker.js';
+			let worker = Potree.workerPool.getWorker(workerPath);
+			const pointAttributes = this.node.owner.pointAttributes;
+
+			worker.onmessage = (e) => {
+				let g = new BufferGeometry();
+
+				let positions = new Float32Array(e.data.position);
+				let colors = new Uint8Array(e.data.color);
+
+				let intensities = new Float32Array(e.data.intensity);
+				let classifications = new Uint8Array(e.data.classification);
+				let returnNumbers = new Uint8Array(e.data.returnNumber);
+				let numberOfReturns = new Uint8Array(e.data.numberOfReturns);
+				let pointSourceIds = new Uint16Array(e.data.pointSourceId);
+				let indices = new Uint8Array(e.data.indices);
+				let gpsTime = new Float32Array(e.data.gpsTime);
+
+				g.setAttribute('position',
+						new BufferAttribute(positions, 3));
+				g.setAttribute('rgba',
+						new BufferAttribute(colors, 4, true));
+				g.setAttribute('intensity',
+						new BufferAttribute(intensities, 1));
+				g.setAttribute('classification',
+						new BufferAttribute(classifications, 1));
+				g.setAttribute('return number',
+						new BufferAttribute(returnNumbers, 1));
+				g.setAttribute('number of returns',
+						new BufferAttribute(numberOfReturns, 1));
+				g.setAttribute('source id',
+						new BufferAttribute(pointSourceIds, 1));
+				g.setAttribute('indices',
+						new BufferAttribute(indices, 4));
+				g.setAttribute('gps-time',
+						new BufferAttribute(gpsTime, 1));
+				this.node.gpsTime = e.data.gpsMeta;
+
+				g.attributes.indices.normalized = true;
+
+				for (const key in e.data.ranges) {
+					const range = e.data.ranges[key];
+					const attribute = pointAttributes.attributes.find(a => a.name === key);
+					if (attribute) {
+						attribute.range[0] = Math.min(attribute.range[0], range[0]);
+						attribute.range[1] = Math.max(attribute.range[1], range[1]);
+
+						// May not be right, but we need something here or we crash.
+						if (!attribute.initialRange) {
+							attribute.initialRange = attribute.range;
+						}
+					}
+				}
+
+				let tightBoundingBox = new Box3(
+					new Vector3().fromArray(e.data.tightBoundingBox.min),
+					new Vector3().fromArray(e.data.tightBoundingBox.max)
+				);
+
+				this.node.doneLoading(
+					g,
+					tightBoundingBox,
+					pointCount,
+					new Vector3(...e.data.mean));
+
+				Potree.workerPool.returnWorker(workerPath, worker);
+			};
+
+			let message = { isFullFile, compressed, header, eb, pointCount, nodemin };
+
+			worker.postMessage(message, [message.compressed]);
 		};
 	};
 
@@ -90744,6 +91144,16 @@ ENDSEC
 						resolve({type: 'pointcloud_loaded', pointcloud: pointcloud});
 					}
 				});
+			} else if (path.includes('.copc.laz')) {
+				CopcLoader.load(path, function(geometry) {
+					if (!geometry) {
+						console.error(new Error(`failed to load point cloud from URL: ${path}`));
+					}
+					else {
+						let pointcloud = new PointCloudOctree(geometry);
+						resolve({type: 'pointcloud_loaded', pointcloud: pointcloud});
+					}
+				});
 			} else if (path.indexOf('cloud.js') > 0) {
 				POCLoader.load(path, function (geometry) {
 					if (!geometry) {
@@ -90903,6 +91313,9 @@ ENDSEC
 	exports.ClipVolume = ClipVolume;
 	exports.ClippingTool = ClippingTool;
 	exports.Compass = Compass;
+	exports.CopcLaszipLoader = CopcLaszipLoader;
+	exports.CopcLazBatcher = CopcLazBatcher;
+	exports.CopcLoader = CopcLoader;
 	exports.DeviceOrientationControls = DeviceOrientationControls;
 	exports.DownloadRequest = DownloadRequest;
 	exports.EarthControls = EarthControls;
@@ -90947,6 +91360,8 @@ ENDSEC
 	exports.PointAttribute = PointAttribute;
 	exports.PointAttributeTypes = PointAttributeTypes;
 	exports.PointAttributes = PointAttributes;
+	exports.PointCloudCopcGeometry = PointCloudCopcGeometry;
+	exports.PointCloudCopcGeometryNode = PointCloudCopcGeometryNode;
 	exports.PointCloudEptGeometry = PointCloudEptGeometry;
 	exports.PointCloudEptGeometryNode = PointCloudEptGeometryNode;
 	exports.PointCloudMaterial = PointCloudMaterial$1;
