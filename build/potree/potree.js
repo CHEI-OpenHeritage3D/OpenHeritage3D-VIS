@@ -56448,6 +56448,10 @@
 	    }
 
 	    initialize() {
+	        // Nodes already put in the queue. With a hierarchy step of 1 (COPC/EPT), every loaded node
+	        // re-traverses its subtree, which the root's traversal already queued — without this set
+	        // those points would be exported twice.
+	        this.queuedNodes = new Set([this.pointcloud.pcoGeometry.root]);
 	        this.priorityQueue.push({ node: this.pointcloud.pcoGeometry.root, weight: Infinity });
 	    };
 
@@ -56463,6 +56467,14 @@
 
 	        while (stack.length > 0) {
 	            let node = stack.pop();
+
+	            // Already queued along with everything known beneath it at that time; any subtree
+	            // discovered since is traversed when its own hierarchy page loads.
+	            if (this.queuedNodes.has(node)) {
+	                continue;
+	            }
+	            this.queuedNodes.add(node);
+
 	            let weight = node.boundingSphere.radius;
 
 	            this.priorityQueue.push({ node: node, weight: weight });
@@ -56516,10 +56528,14 @@
 	                exports.lru.touch(node);
 	                this.highestLevelServed = Math.max(node.getLevel(), this.highestLevelServed);
 
-	                // Add support for different formats of pointclouds
+	                // Add support for different formats of pointclouds. COPC/EPT nodes have neither
+	                // pcoGeometry nor octreeGeometry; their children exist once the node has loaded,
+	                // so traverse at every level (as upstream's ProfileRequest does).
 	                let stepSize = node.pcoGeometry ?
 	                        node.pcoGeometry.hierarchyStepSize :
-	                        node.octreeGeometry.loader.metadata.hierarchy.stepSize;
+	                        node.octreeGeometry ?
+	                        node.octreeGeometry.loader.metadata.hierarchy.stepSize :
+	                        1;
 	                let doTraverse = (node.level % stepSize) === 0 && node.hasChildren;
 	                doTraverse = doTraverse || node.getLevel() === 0;
 	                if (doTraverse) {
@@ -57797,6 +57813,12 @@
 			this.loaded = true;
 			this.loading = false;
 			--Potree.numNodesLoading;
+
+			// Not in 1.8.2: brush-classification hook, same as the 2.0 NodeLoader — reconcile the
+			// freshly-loaded buffer with the edit ledger and wake anything awaiting this node.
+			if (Potree.onNodeLoaded) {
+				try { Potree.onNodeLoaded(this); } catch (e) { console.error(e); }
+			}
 		}
 
 		dispose() {
@@ -68020,7 +68042,10 @@ void main() {
 				let g = new BufferGeometry();
 
 				let positions = new Float32Array(e.data.position);
-				let colors = new Uint8Array(e.data.color);
+				// Not in 1.8.2: the worker allocates 6 bytes/point for color but fills RGBA (4). Trim it so
+				// the attribute's count matches the point count — DownloadRequest derives the per-point
+				// stride from array length, and the LAS exporter reads rgba with a stride of 4.
+				let colors = new Uint8Array(e.data.color, 0, 4 * pointCount);
 				
 				let intensities = new Float32Array(e.data.intensity);
 				let classifications = new Uint8Array(e.data.classification);

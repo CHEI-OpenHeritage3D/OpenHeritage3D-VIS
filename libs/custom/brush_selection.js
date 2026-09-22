@@ -20,7 +20,9 @@
  *   2. Call openBrushPanel() to toggle the panel.
  * 
  * Dependencies:
- *   - Potree (viewer.scene) — Potree 2.0 format (OctreeGeometryNode)
+ *   - Potree (viewer.scene) — Potree 2.0 format (OctreeGeometryNode) or
+ *     COPC (PointCloudCopcGeometryNode); both must call Potree.onNodeLoaded
+ *     when a node's buffer is ready
  *   - Three.js
  *   - Modified potree.js with pick() returning _geometry and _pIndex
  */
@@ -1522,9 +1524,18 @@ function recordEdit(pcName, nodeName, pIndex, classification, position, original
 }
     */
 
+/**
+ * Point count known from the hierarchy, whether or not the node is loaded.
+ * Potree 2.0 fills numPoints from the hierarchy; COPC leaves it at -1 until
+ * the node loads and reports the count through getNumPoints() instead.
+ */
+function geoNodeNumPoints(geoNode) {
+    return Math.max(0, geoNode.getNumPoints() || 0);
+}
+
 function getNodePointCount(geoNode) {
     if (!geoNode) return 0;
-    let count = geoNode.numPoints || 0;
+    let count = geoNodeNumPoints(geoNode);
     for (let i = 0; i < 8; i++) {
         const child = geoNode.children[i];
         if (child) count += getNodePointCount(child);
@@ -1776,7 +1787,7 @@ function getNode(pointcloud, nodeName){
 
 function getNodeNumPoints(pointcloud, nodeName){
     const node = getNode(pointcloud, nodeName);
-    if(node) return node.numPoints;
+    if(node) return geoNodeNumPoints(node);
     else return null;
 }
 
@@ -2613,8 +2624,9 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
 }
 
 // Resolve which pointcloud (by your ledger key) owns this geometry node.
+// Potree 2.0 nodes point at their geometry via octreeGeometry, COPC nodes via owner.
 function pointcloudNameForGeoNode(geoNode) {
-    const geom = geoNode.octreeGeometry;
+    const geom = geoNode.octreeGeometry ?? geoNode.owner;
     for (const pc of viewer.scene.pointclouds) {
         if (pc.pcoGeometry === geom) return pc.name;
     }
@@ -2738,11 +2750,12 @@ function printImplicitExplicitNodes(){
         (function walk(node){
             if(!node) return;
             hierarchyNodes++;
-            hierarchyPoints += node.numPoints || 0;
+            hierarchyPoints += geoNodeNumPoints(node);
             for(let i = 0; i < 8; i++) walk(node.children?.[i]);
         })(pointcloud.pcoGeometry.root);
 
         const cloudPoints = pointcloud.pcoGeometry?.loader?.metadata?.points
+                         ?? pointcloud.pcoGeometry?.copc?.header?.pointCount
                          ?? pointcloud.pcoGeometry?.numPoints
                          ?? hierarchyPoints;
 
