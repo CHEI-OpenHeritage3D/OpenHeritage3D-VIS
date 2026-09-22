@@ -131,27 +131,36 @@
 	color: 			#8Aa1c4;
 }
 
+#potree_quick_buttons{
+	position: absolute;
+	left: 4px;
+	top: 4px; 
+	width: 10px; 
+	height: 10px; 
+	z-index: 10000;
+	float: left;
+}
+
 .potree_menu_toggle{
-	position:		absolute;
 	float:			left;
-	margin:			8px 8px;
+	margin:			0;
 	background:		none;
 	width:			2.5em;
 	height:			2.5em;
 	z-index:		100;
 	cursor: 		pointer;
+	margin:			4px;
 }
 
 #potree_map_toggle{
-	position:		absolute;
 	float:			left;
-	margin:			8px 8px;
+	margin:			0;
 	background:		none;
 	width:			2.5em;
 	height:			2.5em;
 	z-index:		100;
-	top:			calc(2.5em + 8px);
 	cursor: 		pointer;
+	margin:			4px;
 }
 
 #potree_render_area{
@@ -179,7 +188,7 @@
 }
 
 a:hover, a:visited, a:link, a:active{
-	color: 				#0000ff;
+	color: 				#ccccff;
 	text-decoration: 	none;
 }
 
@@ -270,8 +279,8 @@ a:hover, a:visited, a:link, a:active{
 
 .annotation-description{
 	position:		relative;
-	color:			black;
-	background-color:	white;
+	color:			white;
+	background-color:	black;
 	padding:		10px;
 	margin:			5px 0px 0px 0px;
 	border-radius:	4px;
@@ -289,7 +298,7 @@ a:hover, a:visited, a:link, a:active{
 
 	
 .annotation-description-content{
-	color:			black;
+	color:			white;
 }
 
 .annotation-icon{

@@ -29853,21 +29853,21 @@
 
 			const vertices = [
 
-				// (Â±1, Â±1, Â±1)
+				// (±1, ±1, ±1)
 				- 1, - 1, - 1,	- 1, - 1, 1,
 				- 1, 1, - 1, - 1, 1, 1,
 				1, - 1, - 1, 1, - 1, 1,
 				1, 1, - 1, 1, 1, 1,
 
-				// (0, Â±1/Ï†, Â±Ï†)
+				// (0, ±1/φ, ±φ)
 				0, - r, - t, 0, - r, t,
 				0, r, - t, 0, r, t,
 
-				// (Â±1/Ï†, Â±Ï†, 0)
+				// (±1/φ, ±φ, 0)
 				- r, - t, 0, - r, t, 0,
 				r, - t, 0, r, t, 0,
 
-				// (Â±Ï†, 0, Â±1/Ï†)
+				// (±φ, 0, ±1/φ)
 				- t, 0, - r, t, 0, - r,
 				- t, 0, r, t, 0, r
 			];
@@ -38324,7 +38324,7 @@
 
 	/**
 	 * Bezier Curves formulas obtained from
-	 * http://en.wikipedia.org/wiki/BÃ©zier_curve
+	 * http://en.wikipedia.org/wiki/Bézier_curve
 	 */
 
 	function CatmullRom( t, p0, p1, p2, p3 ) {
@@ -40263,19 +40263,19 @@
 			const coeff = this.coefficients;
 
 			// band 0
-			target.copy( coeff[ 0 ] ).multiplyScalar( 0.886227 ); // Ï€ * 0.282095
+			target.copy( coeff[ 0 ] ).multiplyScalar( 0.886227 ); // π * 0.282095
 
 			// band 1
-			target.addScaledVector( coeff[ 1 ], 2.0 * 0.511664 * y ); // ( 2 * Ï€ / 3 ) * 0.488603
+			target.addScaledVector( coeff[ 1 ], 2.0 * 0.511664 * y ); // ( 2 * π / 3 ) * 0.488603
 			target.addScaledVector( coeff[ 2 ], 2.0 * 0.511664 * z );
 			target.addScaledVector( coeff[ 3 ], 2.0 * 0.511664 * x );
 
 			// band 2
-			target.addScaledVector( coeff[ 4 ], 2.0 * 0.429043 * x * y ); // ( Ï€ / 4 ) * 1.092548
+			target.addScaledVector( coeff[ 4 ], 2.0 * 0.429043 * x * y ); // ( π / 4 ) * 1.092548
 			target.addScaledVector( coeff[ 5 ], 2.0 * 0.429043 * y * z );
-			target.addScaledVector( coeff[ 6 ], 0.743125 * z * z - 0.247708 ); // ( Ï€ / 4 ) * 0.315392 * 3
+			target.addScaledVector( coeff[ 6 ], 0.743125 * z * z - 0.247708 ); // ( π / 4 ) * 0.315392 * 3
 			target.addScaledVector( coeff[ 7 ], 2.0 * 0.429043 * x * z );
-			target.addScaledVector( coeff[ 8 ], 0.429043 * ( x * x - y * y ) ); // ( Ï€ / 4 ) * 0.546274
+			target.addScaledVector( coeff[ 8 ], 0.429043 * ( x * x - y * y ) ); // ( π / 4 ) * 0.546274
 
 			return target;
 
@@ -61254,7 +61254,7 @@ void main() {
 
 				let density = node.geometryNode.density;
 				
-				if(typeof density === "number"){
+				if(typeof density === "number" && !Number.isNaN(density)){
 					let lodOffset = Math.log2(density) / 2 - 1.5;
 
 					let offsetUint8 = (lodOffset + 10) * 10;
@@ -63920,6 +63920,7 @@ void main() {
 
 				const geometry = node.geometryNode.geometry;
 
+				if (!geometry) console.log('Missing geometry', node);
 				if(geometry.attributes["gps-time"]){
 					const bufferAttribute = geometry.attributes["gps-time"];
 					const attGPS = octree.getAttribute("gps-time");
@@ -66302,8 +66303,8 @@ void main() {
 					view.setUint16(boffset + 18, points.data.pointSourceID[i]);
 				}
 
-				if (points.data.rgba) {
-					let rgba = points.data.rgba;
+				if (points.data.rgba || points.data.color) {
+					let rgba = points.data.rgba ?? points.data.color;
 					view.setUint16(boffset + 20, (rgba[4 * i + 0] * 255), true);
 					view.setUint16(boffset + 22, (rgba[4 * i + 1] * 255), true);
 					view.setUint16(boffset + 24, (rgba[4 * i + 2] * 255), true);
@@ -67399,6 +67400,13 @@ void main() {
 					current.byteSize = byteSize;
 					current.numPoints = numPoints;
 				}
+
+				if(current.byteSize === 0n){
+					// workaround for issue #1125
+					// some inner nodes erroneously report >0 points even though have 0 points
+					// however, they still report a byteSize of 0, so based on that we now set node.numPoints to 0
+					current.numPoints = 0;
+				}
 				
 				current.nodeType = type;
 
@@ -67948,7 +67956,7 @@ void main() {
 						new BufferAttribute(pointSourceIDs, 1));
 				g.setAttribute('indices',
 						new BufferAttribute(indices, 4));
-				g.setAttribute('gpsTime',
+				g.setAttribute('gps-time',
 						new BufferAttribute(gpsTime, 1));
 				this.node.gpsTime = e.data.gpsMeta;
 
@@ -69403,7 +69411,7 @@ void main() {
 		if(degrees < 0){
 			degrees = 360 + degrees;
 		}
-		const txtDegrees = `${degrees.toFixed(2)}Â°`;
+		const txtDegrees = `${degrees.toFixed(2)}°`;
 		const labelDir = northPos.clone().add(p1.position).multiplyScalar(0.5).sub(p0.position);
 		if(labelDir.length() > 0){
 			labelDir.z = 0;
@@ -73479,6 +73487,184 @@ void main() {
 
 	}
 
+	/**
+	 *
+	 * @author roy.mdr / http://...
+	 *
+	 */
+
+	class DXFProfileExporter {
+
+		static toXYZ(points, flatten = false) {
+
+			/*
+			points: {
+				...
+				data: {
+					mileage: [0, 1, 2...], -> one per point
+					position: [0, 0, 0, 1, 1, 1, 2, 2, 2...], -> X, Y, Z
+					rgba: [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2...] -> R, G, B, A
+				},
+				numPoints: Int
+			}
+			*/
+
+			const pointsXYZ = {
+				x: [],
+				y: [],
+				z: [],
+				minX:  Number.MAX_VALUE,
+				minY:  Number.MAX_VALUE,
+				minZ:  Number.MAX_VALUE,
+				maxX: -Number.MAX_VALUE,
+				maxY: -Number.MAX_VALUE,
+				maxZ: -Number.MAX_VALUE,
+				numPoints: 0
+			};
+
+			const pData    = points.data;
+			const pMileage = pData.mileage;
+			const pCoords  = pData.position;
+			const pColor   = pData.rgba;
+
+			for (let pIx = 0; pIx < points.numPoints; pIx++) {
+
+				const poMileage = pMileage[pIx];
+				const poCoordX  = pCoords[ ((pIx * 3) + 0) ];
+				const poCoordY  = pCoords[ ((pIx * 3) + 1) ];
+				const poCoordZ  = pCoords[ ((pIx * 3) + 2) ];
+				// const poColorR  = pColor[ ((pIx * 4) + 0) ];
+				// const poColorG  = pColor[ ((pIx * 4) + 1) ];
+				// const poColorB  = pColor[ ((pIx * 4) + 2) ];
+				// const poColorA  = pColor[ ((pIx * 4) + 3) ];
+
+				if (flatten === true) {
+
+					pointsXYZ.x.push(poMileage);
+					pointsXYZ.y.push(0);
+					pointsXYZ.z.push(poCoordZ);
+
+					// Get boundaries X
+					if (pointsXYZ.maxX < poMileage) pointsXYZ.maxX = poMileage;
+					if (pointsXYZ.minX > poMileage) pointsXYZ.minX = poMileage;
+
+					// Get boundaries Z
+					if (pointsXYZ.maxZ < poCoordZ) pointsXYZ.maxZ = poCoordZ;
+					if (pointsXYZ.minZ > poCoordZ) pointsXYZ.minZ = poCoordZ;
+
+				} else {
+
+					pointsXYZ.x.push(poCoordX);
+					pointsXYZ.y.push(poCoordY);
+					pointsXYZ.z.push(poCoordZ);
+
+					// Get boundaries X
+					if (pointsXYZ.maxX < poCoordX) pointsXYZ.maxX = poCoordX;
+					if (pointsXYZ.minX > poCoordX) pointsXYZ.minX = poCoordX;
+
+					// Get boundaries Y
+					if (pointsXYZ.maxY < poCoordY) pointsXYZ.maxY = poCoordY;
+					if (pointsXYZ.minY > poCoordY) pointsXYZ.minY = poCoordY;
+
+					// Get boundaries Z
+					if (pointsXYZ.maxZ < poCoordZ) pointsXYZ.maxZ = poCoordZ;
+					if (pointsXYZ.minZ > poCoordZ) pointsXYZ.minZ = poCoordZ;
+
+				}
+
+			}
+
+			if (flatten === true) {
+				// Set boundaries Y
+				pointsXYZ.maxY = 0;
+				pointsXYZ.minY = 0;
+			}
+
+			pointsXYZ.numPoints = points.numPoints;
+
+			return pointsXYZ;
+		}
+
+		static plotPCloudPoint(x, y, z) {
+
+			const dxfSection = `0
+POINT
+8
+layer_pointCloud
+10
+${x}
+20
+${y}
+30
+${z}
+`;
+
+			return dxfSection;
+		}
+
+		static toString(points, flatten = false) {
+
+			const pCloud = DXFProfileExporter.toXYZ(points, flatten);
+
+			const dxfHeader = `999
+DXF created from potree
+0
+SECTION
+2
+HEADER
+9
+$ACADVER
+1
+AC1006
+9
+$INSBASE
+10
+0.0
+20
+0.0
+30
+0.0
+9
+$EXTMIN
+10
+${pCloud.minX}
+20
+${pCloud.minY}
+30
+${pCloud.minZ}
+9
+$EXTMAX
+10
+${pCloud.maxX}
+20
+${pCloud.maxY}
+30
+${pCloud.maxZ}
+0
+ENDSEC
+`;
+
+			let dxfBody = `0
+SECTION
+2
+ENTITIES
+`;
+
+			for (let i = 0; i < pCloud.numPoints; i++) {
+				dxfBody += DXFProfileExporter.plotPCloudPoint(pCloud.x[i], pCloud.y[i], pCloud.z[i]);
+			}
+
+			dxfBody += `0
+ENDSEC
+`;
+
+			const dxf = dxfHeader + dxfBody + '0\nEOF';
+
+			return dxf;
+		}
+
+	}
+
 	class CSVExporter {
 		static toString (points) {
 			let string = '';
@@ -73779,6 +73965,12 @@ void main() {
 			let backwardIcon = `${exports.resourcePath}/icons/arrow_down.svg`;
 			$('#potree_profile_move_backward').attr('src', backwardIcon);
 
+			let dxf2DIcon = `${exports.resourcePath}/icons/file_dxf_2d.svg`;
+			$('#potree_download_dxf2D_icon').attr('src', dxf2DIcon);
+
+			let dxf3DIcon = `${exports.resourcePath}/icons/file_dxf_3d.svg`;
+			$('#potree_download_dxf3D_icon').attr('src', dxf3DIcon);
+
 			let csvIcon = `${exports.resourcePath}/icons/file_csv_2d.svg`;
 			$('#potree_download_csv_icon').attr('src', csvIcon);
 
@@ -73995,19 +74187,25 @@ void main() {
 				this.hide();
 			});
 
-			let getProfilePoints = () => {
+			let getProfilePoints = (truePosition) => {
 				let points = new Points$1();
 				
 				for(let [pointcloud, entry] of this.pointclouds){
 					for(let pointSet of entry.points){
 
 						let originPos = pointSet.data.position;
-						let trueElevationPosition = new Float32Array(originPos);
+						let truePointPosition = new Float64Array(originPos);
 						for(let i = 0; i < pointSet.numPoints; i++){
-							trueElevationPosition[3 * i + 2] += pointcloud.position.z;
+
+							if (truePosition === true) {
+								truePointPosition[3 * i + 0] += pointcloud.position.x;
+								truePointPosition[3 * i + 1] += pointcloud.position.y;
+							}
+
+							truePointPosition[3 * i + 2] += pointcloud.position.z;
 						}
 
-						pointSet.data.position = trueElevationPosition;
+						pointSet.data.position = truePointPosition;
 						points.add(pointSet);
 						pointSet.data.position = originPos;
 					}
@@ -74016,9 +74214,29 @@ void main() {
 				return points;
 			};
 
+			$('#potree_download_dxf2D_icon').click(() => {
+				
+				const points = getProfilePoints();
+
+				const string = DXFProfileExporter.toString(points, true);
+
+				const blob = new Blob([string], {type: "text/string"});
+				$('#potree_download_profile_dxf2D_link').attr('href', URL.createObjectURL(blob));
+			});
+
+			$('#potree_download_dxf3D_icon').click(() => {
+				
+				const points = getProfilePoints(true);
+
+				const string = DXFProfileExporter.toString(points);
+
+				const blob = new Blob([string], {type: "text/string"});
+				$('#potree_download_profile_dxf3D_link').attr('href', URL.createObjectURL(blob));
+			});
+
 			$('#potree_download_csv_icon').click(() => {
 				
-				let points = getProfilePoints();
+				let points = getProfilePoints(true);
 
 				let string = CSVExporter.toString(points);
 
@@ -74028,7 +74246,7 @@ void main() {
 
 			$('#potree_download_las_icon').click(() => {
 
-				let points = getProfilePoints();
+				let points = getProfilePoints(true);
 
 				let buffer = LASExporter.toLAS(points);
 
@@ -74625,8 +74843,8 @@ void main() {
 	/**
 	 *
 	 * @author sigeom sa / http://sigeom.ch
-	 * @author Ioda-Net SÃ rl / https://www.ioda-net.ch/
-	 * @author Markus SchÃ¼tz / http://potree.org
+	 * @author Ioda-Net Sàrl / https://www.ioda-net.ch/
+	 * @author Markus Schütz / http://potree.org
 	 *
 	 */
 
@@ -74737,7 +74955,7 @@ void main() {
 	/**
 	 *
 	 * @author sigeom sa / http://sigeom.ch
-	 * @author Ioda-Net SÃ rl / https://www.ioda-net.ch/
+	 * @author Ioda-Net Sàrl / https://www.ioda-net.ch/
 	 * @author Markus Schuetz / http://potree.org
 	 *
 	 */
@@ -76543,6 +76761,20 @@ ENDSEC
 					<li>Gamma: <span id="lblExtraGamma"></span> <div id="sldExtraGamma"></div></li>
 					<li>Brightness: <span id="lblExtraBrightness"></span> <div id="sldExtraBrightness"></div></li>
 					<li>Contrast: <span id="lblExtraContrast"></span> <div id="sldExtraContrast"></div></li>
+
+					<li>
+						<selectgroup id="extra_gradient_repeat_option">
+							<option id="extra_gradient_repeat_clamp" value="CLAMP">Clamp</option>
+							<option id="extra_gradient_repeat_repeat" value="REPEAT">Repeat</option>
+							<option id="extra_gradient_repeat_mirrored_repeat" value="MIRRORED_REPEAT">Mirrored Repeat</option>
+						</selectgroup>
+					</li>
+
+					<li>
+						<span>Gradient Scheme:</span>
+						<div id="extra_gradient_scheme_selection" class="gradient_scheme" style="display: flex; padding: 1em 0em">
+						</div>
+					</li>
 				</div>
 				
 				<div id="materials.matcap_container">
@@ -76581,7 +76813,7 @@ ENDSEC
 
 					<li>
 						<span>Gradient Scheme:</span>
-						<div id="elevation_gradient_scheme_selection" style="display: flex; padding: 1em 0em">
+						<div id="elevation_gradient_scheme_selection" class="gradient_scheme" style="display: flex; padding: 1em 0em">
 						</div>
 					</li>
 				</div>
@@ -76925,24 +77157,26 @@ ENDSEC
 			{
 				const schemes = Object.keys(Potree.Gradients).map(name => ({name: name, values: Gradients[name]}));
 
-				let elSchemeContainer = panel.find("#elevation_gradient_scheme_selection");
+				let elSchemeContainers = panel.find("div.gradient_scheme");
 
 				for(let scheme of schemes){
-					let elScheme = $(`
-					<span style="flex-grow: 1;">
-					</span>
-				`);
+					elSchemeContainers.each(function(index, container){
+						let elScheme = $(`
+						<span style="flex-grow: 1;">
+						</span>
+					`);
 
-					const svg = Potree.Utils.createSvgGradient(scheme.values);
-					svg.setAttributeNS(null, "class", `button-icon`);
+						const svg = Potree.Utils.createSvgGradient(scheme.values);
+						svg.setAttributeNS(null, "class", `button-icon`);
 
-					elScheme.append($(svg));
+						elScheme.append($(svg));
 
-					elScheme.click( () => {
-						material.gradient = Gradients[scheme.name];
+						elScheme.click( () => {
+							material.gradient = Gradients[scheme.name];
+						});
+
+						$(container).append(elScheme);
 					});
-
-					elSchemeContainer.append(elScheme);
 				}
 			}
 
@@ -77194,6 +77428,19 @@ ENDSEC
 
 				{
 					let elGradientRepeat = panel.find("#gradient_repeat_option");
+					elGradientRepeat.selectgroup({title: "Gradient"});
+
+					elGradientRepeat.find("input").click( (e) => {
+						this.viewer.setElevationGradientRepeat(ElevationGradientRepeat[e.target.value]);
+					});
+
+					let current = Object.keys(ElevationGradientRepeat)
+						.filter(key => ElevationGradientRepeat[key] === this.viewer.elevationGradientRepeat);
+					elGradientRepeat.find(`input[value=${current}]`).trigger("click");
+				}
+
+				{
+					let elGradientRepeat = panel.find("#extra_gradient_repeat_option");
 					elGradientRepeat.selectgroup({title: "Gradient"});
 
 					elGradientRepeat.find("input").click( (e) => {
@@ -80818,7 +81065,7 @@ ENDSEC
 				const images = e.images;
 
 				const imagesIcon = `${Potree.resourcePath}/icons/picture.svg`;
-				const node = createNode(imagesID, "360Â° images", imagesIcon, images);
+				const node = createNode(imagesID, "360° images", imagesIcon, images);
 
 				images.addEventListener("visibility_changed", () => {
 					if(images.visible){
@@ -81508,7 +81755,9 @@ ENDSEC
 				["JP", "jp"],
 				["ES", "es"],
 				["SE", "se"],
-				["ZH", "zh"]
+				["ZH", "zh"],
+				["IT", "it"],
+				["CA", "ca"]
 			];
 
 			let elLanguages = $('#potree_languages');
@@ -85824,7 +86073,7 @@ ENDSEC
 					if ( source.mimeType === 'image/png' ) {
 
 						// Inspect the PNG 'IHDR' chunk to determine whether the image could have an
-						// alpha channel. This check is conservative â€” the image could have an alpha
+						// alpha channel. This check is conservative — the image could have an alpha
 						// channel with all values == 1, and the indexed type (colorType == 3) only
 						// sometimes contains alpha.
 						//
@@ -90014,7 +90263,7 @@ ENDSEC
 				i18n.init({
 					lng: 'en',
 					resGetPath: Potree.resourcePath + '/lang/__lng__/__ns__.json',
-					preload: ['en', 'fr', 'de', 'jp', 'se', 'es', 'zh'],
+					preload: ['en', 'fr', 'de', 'jp', 'se', 'es', 'zh', 'it', 'ca'],
 					getAsync: true,
 					debug: false
 				}, function (t) {
@@ -90094,14 +90343,16 @@ ENDSEC
 
 					const file = item.getAsFile();
 
-					const isJson = file.name.toLowerCase().endsWith(".json");
+					// 1.8.2 switched Potree project files from .json to .json5; accept both.
+					// JSON5 is a strict superset of JSON, so lib.parse() handles either.
+					const isJson = /\.json5?$/.test(file.name.toLowerCase());
 					const isGeoPackage = file.name.toLowerCase().endsWith(".gpkg");
 
 					if(isJson){
 						try{
 
 							const text = await file.text();
-							const json = JSON.parse(text);
+							const json = lib.parse(text);
 
 							if(json.type === "Potree"){
 								Potree.loadProject(viewer, json);
@@ -91182,7 +91433,7 @@ ENDSEC
 			// load pointcloud
 			if (!path){
 				// TODO: callback? comment? Hello? Bueller? Anyone?
-			} else if (path.indexOf('ept.json') > 0) {
+			} else if (path.includes('ept.json')) {
 				EptLoader.load(path, function(geometry) {
 					if (!geometry) {
 						console.error(new Error(`failed to load point cloud from URL: ${path}`));
@@ -91465,4 +91716,3 @@ ENDSEC
 	Object.defineProperty(exports, '__esModule', { value: true });
 
 })));
-//# sourceMappingURL=potree.js.map
