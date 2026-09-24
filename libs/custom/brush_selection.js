@@ -1225,12 +1225,7 @@ function rebuildClassificationGridUI() {
 
         btn.appendChild(visChk);
 
-        btn.addEventListener("click", () => {
-            grid.querySelectorAll(".brush-class-btn").forEach(b => b.classList.remove("active"));
-            btn.classList.add("active");
-            window.brushState.classification = cls.value;
-            updateBrushSphereColor();
-        });
+        btn.addEventListener("click", () => selectBrushClassification(cls.value));
 
         grid.appendChild(btn);
     }
@@ -2666,152 +2661,139 @@ function setStrokeIndicator(active) {
     }
 }
 
-function printImplicitExplicitNodes(){
+/**
+ * Drop-in replacement for printImplicitExplicitNodes() in brush_selection.js.
+ *
+ * Counts with the ledger's actual semantics: a point's class is its own override
+ * if one exists, else the nearest "all" baseline at or above its node, else the
+ * untouched LAS value. One DFS over the loaded hierarchy carries the effective
+ * baseline down, so every point is counted exactly once and "assigned" can never
+ * exceed the hierarchy. O(nodes + overrides); no findGeoNode() full-tree searches.
+ *
+ * Old → new field meanings:
+ *   redundant      → split into nestedSame (truly prunable: same class as the
+ *                    nearest baseline above) and nestedDiff (a real class change)
+ *   editedPoints   → assigned (points whose class comes from the ledger)
+ *   classes        → effective class of every assigned point; sums to `assigned`
+ */
+function printImplicitExplicitNodes() {
     const totals = {
-        pointclouds:     0,
-        entries:         0,
-        pureImplicit:    0,
-        hybrid:          0,
-        explicit:        0,
-        redundant:       0,
-        missingGeoNode:  0,
-        hybridOverrides: 0,
-        explicitPoints:  0,
-        implicitPoints:  0,
-        editedPoints:    0,
-        loadedNodes:     0,
-        hierarchyNodes:  0,
-        hierarchyPoints: 0,
-        cloudPoints:     0,
+        pointclouds: 0, entries: 0, pureImplicit: 0, hybrid: 0, explicit: 0,
+        nestedSame: 0, nestedDiff: 0, unresolved: 0,
+        pointEntries: 0, noopOverrides: 0,
+        assigned: 0, untouched: 0,
+        hierarchyNodes: 0, hierarchyPoints: 0, cloudPoints: 0,
     };
     const rows = [];
 
-    for(const pointcloud of viewer.scene.pointclouds) {
+    for (const pointcloud of viewer.scene.pointclouds) {
         const pcEdits = brushEdits.get(pointcloud.name);
-        if(!pcEdits) continue;
+        if (!pcEdits) continue;
         totals.pointclouds++;
 
-        // "all" baselines, so descendants covered by an ancestor aren't double-counted
-        const implicitNames = [];
-        for(const [nodeName, entry] of pcEdits){
-            if(isAllEntry(entry)) implicitNames.push(nodeName);
-        }
-
-        const pc = {
-            name:            pointcloud.name,
-            entries:         pcEdits.size,
-            pureImplicit:    0,   // { all: true } with no per-point overrides
-            hybrid:          0,   // { all: true, overrides: Map }
-            explicit:        0,   // bare Map of per-point edits
-            redundant:       0,   // "all" node already covered by an "all" ancestor
-            missingGeoNode:  0,   // ledger entry whose octree node isn't in the hierarchy
-            hybridOverrides: 0,   // point entries living inside hybrid nodes
-            explicitPoints:  0,   // point entries living inside explicit Maps
-            implicitPoints:  0,   // points covered by non-redundant "all" subtrees
-            classes:         new Map(),
+        const s = {
+            name: pointcloud.name, entries: pcEdits.size,
+            pureImplicit: 0, hybrid: 0, explicit: 0,
+            nestedSame: 0,      // "all" entry whose class equals the baseline it sits under
+            nestedDiff: 0,      // "all" entry that changes the inherited class
+            reached: 0,         // entries whose node exists in the loaded hierarchy
+            pointEntries: 0,    // stored per-point overrides (hybrid + explicit)
+            noopOverrides: 0,   // overrides equal to the baseline they sit on
+            assigned: 0,        // points whose class comes from the ledger
+            untouched: 0,       // points still at their LAS original
+            hierarchyNodes: 0, hierarchyPoints: 0,
+            classes: new Map(),
         };
+        const bump = (c, k) => { if (k > 0) s.classes.set(c, (s.classes.get(c) || 0) + k); };
 
-        const bump = (cls, n) => pc.classes.set(cls, (pc.classes.get(cls) || 0) + n);
-
-        for(const [nodeName, entry] of pcEdits){
-            const overrides = getOverrides(entry);
-
-            if(!isAllEntry(entry)){
-                pc.explicit++;
-                pc.explicitPoints += entry.size;
-                for(const edit of entry.values()) bump(edit.classification, 1);
-                continue;
-            }
-
-            if(overrides && overrides.size > 0){
-                pc.hybrid++;
-                pc.hybridOverrides += overrides.size;
-                for(const edit of overrides.values()) bump(edit.classification, 1);
-            } else {
-                pc.pureImplicit++;
-            }
-
-            const coveredByAncestor = implicitNames.some(
-                n => n !== nodeName && nodeName.startsWith(n)
-            );
-            if(coveredByAncestor){ pc.redundant++; continue; }
-
-            const geoNode = findGeoNode(pointcloud.pcoGeometry.root, nodeName);
-            if(!geoNode){ pc.missingGeoNode++; continue; }
-
-            const subtreePoints = getNodePointCount(geoNode);
-            pc.implicitPoints += subtreePoints;
-            // overrides repaint points the baseline already counted
-            bump(entry.classification, subtreePoints - (overrides ? overrides.size : 0));
+        for (const entry of pcEdits.values()) {
+            if (!isAllEntry(entry))         s.explicit++;
+            else if (entry.overrides?.size) s.hybrid++;
+            else                            s.pureImplicit++;
         }
 
-        // Octree size, for context on how much of the cloud the ledger touches
-        let hierarchyNodes = 0, hierarchyPoints = 0;
-        (function walk(node){
-            if(!node) return;
-            hierarchyNodes++;
-            hierarchyPoints += geoNodeNumPoints(node);
-            for(let i = 0; i < 8; i++) walk(node.children?.[i]);
-        })(pointcloud.pcoGeometry.root);
+        (function walk(node, baseline) {
+            if (!node) return;
+            const n = geoNodeNumPoints(node);   // 0 for unloaded COPC nodes
+            s.hierarchyNodes++;
+            s.hierarchyPoints += n;
 
-        const cloudPoints = pointcloud.pcoGeometry?.loader?.metadata?.points
-                         ?? pointcloud.pcoGeometry?.copc?.header?.pointCount
-                         ?? pointcloud.pcoGeometry?.numPoints
-                         ?? hierarchyPoints;
+            const entry = pcEdits.get(node.name);
+            if (entry) s.reached++;
+            if (isAllEntry(entry)) {
+                if (baseline !== null) {
+                    if (entry.classification === baseline) s.nestedSame++;
+                    else                                   s.nestedDiff++;
+                }
+                baseline = entry.classification;
+            }
 
-        pc.pointEntries  = pc.hybridOverrides + pc.explicitPoints;
-        pc.editedPoints  = pc.implicitPoints + pc.explicitPoints;
-        pc.loadedNodes   = pointcloud.visibleNodes?.length || 0;
-        pc.hierarchyNodes  = hierarchyNodes;
-        pc.hierarchyPoints = hierarchyPoints;
-        pc.cloudPoints     = cloudPoints;
-        rows.push(pc);
+            const overrides = getOverrides(entry);
+            const ov = overrides ? overrides.size : 0;
+            if (overrides) {
+                s.pointEntries += ov;
+                for (const edit of overrides.values()) {
+                    bump(edit.classification, 1);
+                    if (edit.classification === baseline) s.noopOverrides++;
+                }
+            }
 
-        totals.entries         += pc.entries;
-        totals.pureImplicit    += pc.pureImplicit;
-        totals.hybrid          += pc.hybrid;
-        totals.explicit        += pc.explicit;
-        totals.redundant       += pc.redundant;
-        totals.missingGeoNode  += pc.missingGeoNode;
-        totals.hybridOverrides += pc.hybridOverrides;
-        totals.explicitPoints  += pc.explicitPoints;
-        totals.implicitPoints  += pc.implicitPoints;
-        totals.editedPoints    += pc.editedPoints;
-        totals.loadedNodes     += pc.loadedNodes;
-        totals.hierarchyNodes  += hierarchyNodes;
-        totals.hierarchyPoints += hierarchyPoints;
-        totals.cloudPoints     += cloudPoints;
+            if (baseline !== null) {
+                bump(baseline, n - ov);         // overrides repaint points the baseline covers
+                s.assigned += Math.max(n, ov);
+            } else {
+                s.assigned  += ov;
+                s.untouched += Math.max(0, n - ov);
+            }
+
+            for (let i = 0; i < 8; i++) walk(node.children?.[i], baseline);
+        })(pointcloud.pcoGeometry.root, null);
+
+        s.unresolved  = s.entries - s.reached;
+        s.cloudPoints = pointcloud.pcoGeometry?.loader?.metadata?.points
+                     ?? pointcloud.pcoGeometry?.copc?.header?.pointCount
+                     ?? pointcloud.pcoGeometry?.numPoints
+                     ?? s.hierarchyPoints;
+        s.loadedNodes = pointcloud.visibleNodes?.length || 0;
+        rows.push(s);
+
+        for (const k of ["entries", "pureImplicit", "hybrid", "explicit", "nestedSame", "nestedDiff",
+                         "unresolved", "pointEntries", "noopOverrides", "assigned", "untouched",
+                         "hierarchyNodes", "hierarchyPoints", "cloudPoints"]) {
+            totals[k] += s[k];
+        }
     }
 
     const n   = v => (v ?? 0).toLocaleString();
     const pct = (a, b) => b > 0 ? `${(100 * a / b).toFixed(3)}%` : "n/a";
 
     console.group("brush ledger stats");
-    for(const pc of rows){
-        console.group(pc.name);
-        console.log(`nodes:   ${n(pc.entries)} ledger entries — ${n(pc.pureImplicit)} pure implicit, ${n(pc.hybrid)} hybrid, ${n(pc.explicit)} explicit` +
-                    (pc.redundant ? `, ${n(pc.redundant)} redundant (ancestor-covered)` : "") +
-                    (pc.missingGeoNode ? `, ${n(pc.missingGeoNode)} unresolved in hierarchy` : ""));
-        console.log(`points:  ${n(pc.pointEntries)} stored point entries — ${n(pc.hybridOverrides)} hybrid overrides, ${n(pc.explicitPoints)} explicit`);
-        console.log(`edited:  ${n(pc.editedPoints)} points (${n(pc.implicitPoints)} implicit + ${n(pc.explicitPoints)} explicit) = ${pct(pc.editedPoints, pc.cloudPoints)} of cloud`);
-        console.log(`cloud:   ${n(pc.cloudPoints)} points total, ${n(pc.hierarchyPoints)} in loaded hierarchy across ${n(pc.hierarchyNodes)} nodes, ${n(pc.loadedNodes)} visible`);
-        if(pc.classes.size){
-            const byClass = [...pc.classes.entries()].sort((a, b) => b[1] - a[1])
-                .map(([cls, count]) => `${cls}: ${n(count)}`).join(", ");
-            console.log(`classes: ${byClass}`);
+    for (const s of rows) {
+        console.group(s.name);
+        console.log(`entries:   ${n(s.entries)} — ${n(s.pureImplicit)} pure implicit, ${n(s.hybrid)} hybrid, ${n(s.explicit)} explicit` +
+                    (s.unresolved ? `, ${n(s.unresolved)} not in loaded hierarchy` : ""));
+        console.log(`nested:    ${n(s.nestedDiff)} baselines change the inherited class, ` +
+                    `${n(s.nestedSame)} repeat it (prunable)`);
+        console.log(`overrides: ${n(s.pointEntries)} stored` +
+                    (s.noopOverrides ? `, ${n(s.noopOverrides)} equal to their baseline (prunable)` : ""));
+        console.log(`assigned:  ${n(s.assigned)} points take their class from the ledger ` +
+                    `(${pct(s.assigned, s.cloudPoints)} of cloud); ${n(s.untouched)} still at LAS original`);
+        console.log(`cloud:     ${n(s.cloudPoints)} points, ${n(s.hierarchyPoints)} in loaded hierarchy ` +
+                    `across ${n(s.hierarchyNodes)} nodes, ${n(s.loadedNodes)} visible`);
+        if (s.classes.size) {
+            console.log("classes:   " + [...s.classes.entries()].sort((a, b) => b[1] - a[1])
+                .map(([c, k]) => `${c}: ${n(k)} (${pct(k, s.assigned)})`).join(", "));
         }
         console.groupEnd();
     }
-    if(rows.length === 0) console.log("no ledger entries");
-    console.log(`TOTAL across ${n(totals.pointclouds)} pointcloud(s): ` +
-                `${n(totals.entries)} entries (implicit ${n(totals.pureImplicit)} / hybrid ${n(totals.hybrid)} / explicit ${n(totals.explicit)}), ` +
-                `${n(totals.hybridOverrides + totals.explicitPoints)} point entries (${n(totals.hybridOverrides)} hybrid overrides), ` +
-                `${n(totals.editedPoints)} edited points of ${n(totals.cloudPoints)} (${pct(totals.editedPoints, totals.cloudPoints)})`);
+    if (rows.length === 0) console.log("no ledger entries");
+    console.log(`TOTAL across ${n(totals.pointclouds)} pointcloud(s): ${n(totals.entries)} entries, ` +
+                `${n(totals.pointEntries)} stored overrides, ${n(totals.assigned)} assigned points of ` +
+                `${n(totals.cloudPoints)} (${pct(totals.assigned, totals.cloudPoints)})`);
     console.groupEnd();
 
     return totals;
 }
-
 
 function removeExplicitNodes(){
     for(const pointcloud of viewer.scene.pointclouds) {
@@ -3347,6 +3329,7 @@ const HELP_GROUPS = [
             { keys: ["E"],                  desc: "Grow the brush radius" },
             { keys: ["Ctrl/Cmd", "Scroll"], desc: "Resize the brush mid-stroke" },
             { keys: ["W"],                  desc: "Cycle RGB / classification blend" },
+            { keys: ["1", "9"], sep: "–",   desc: "Switch the paint classification (first 9 classes)" },
         ],
     },
     {
@@ -3734,7 +3717,7 @@ function openBrushPanel() {
 
     const pcDropdown = document.createElement("div");
     pcDropdown.style.cssText = `
-        display:none; position:fixed; z-index:10002;
+        display:none; position:fixed; z-index:10900;
         max-height: 180px; overflow-y:auto;
         border-radius: 8px;
         background: rgba(22,22,30,0.95);
@@ -3906,14 +3889,10 @@ function openBrushPanel() {
         const label = document.createElement("span");
         label.textContent = cls.name;
         btn.appendChild(label);
+
         btn.appendChild(visChk);
 
-        btn.addEventListener("click", () => {
-            grid.querySelectorAll(".brush-class-btn").forEach(b => b.classList.remove("active"));
-            btn.classList.add("active");
-            window.brushState.classification = cls.value;
-            updateBrushSphereColor();
-        });
+        btn.addEventListener("click", () => selectBrushClassification(cls.value));
 
         grid.appendChild(btn);
     }
@@ -4242,6 +4221,21 @@ function updateBrushSphereColor() {
     }
 }
 
+/**
+ * Select a classification as the brush's active paint color — shared by the
+ * class-grid click handlers and the 1-9 hotkeys so both stay in sync.
+ */
+function selectBrushClassification(value) {
+    const grid = document.getElementById("brushClassGrid");
+    if (grid) {
+        grid.querySelectorAll(".brush-class-btn").forEach(b => {
+            b.classList.toggle("active", String(b.dataset.value) === String(value));
+        });
+    }
+    window.brushState.classification = value;
+    updateBrushSphereColor();
+}
+
 function updateRadiusUI() {
     const slider = document.querySelector('#brushPanel .brush-slider');
     const value  = document.querySelector('#brushPanel .brush-slider-value');
@@ -4526,6 +4520,14 @@ document.addEventListener("DOMContentLoaded", () => {
         if ((e.key === 'w' || e.key === 'W') &&
             !(window.orientedImageState && window.orientedImageState.controls)) {
             toggleClassBlendCycle();
+        }
+
+        // 1-9 switch the brush's paint classification, only while the brush
+        // is active — otherwise these are just ordinary number keys.
+        if (e.key >= '1' && e.key <= '9' && window.brushState.active &&
+            !e.ctrlKey && !e.metaKey && !e.altKey) {
+            const cls = CLASSIFICATIONS[Number(e.key) - 1];
+            if (cls) selectBrushClassification(cls.value);
         }
     });
 

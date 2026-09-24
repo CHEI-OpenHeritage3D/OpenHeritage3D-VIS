@@ -93,7 +93,7 @@ style.textContent += `
 .transform-offset {
     font-size: 11px;
     color: #7f7f8a;
-    margin: 2px 0 6px;
+    margin: 5px 0 0;
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
 }
 
@@ -239,9 +239,160 @@ style.textContent += `
 .export-copy-btn.copied { background: #22c55e !important; }
 `;
 
+style.textContent += `
+/* ═══════════════════════════════════════════════════════════
+   TRANSFORM PANEL — mode buttons & manual value entry
+   ═══════════════════════════════════════════════════════════ */
 
+/* Gizmo mode buttons — one per hotkey, so every operation the keyboard
+   exposes is also reachable with the mouse. */
+.transform-modes {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+}
+.transform-mode-btn,
+.transform-toggle-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 6px;
+    background: rgba(255,255,255,0.08);
+    color: #f2f2f7;
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background .15s ease, border-color .15s ease, transform .1s ease;
+}
+.transform-toggle-btn { width: 100%; margin-top: 6px; }
+.transform-mode-btn:hover:not(:disabled),
+.transform-toggle-btn:hover:not(:disabled) {
+    background: rgba(79,70,229,0.28);
+    border-color: rgba(79,70,229,0.45);
+}
+.transform-mode-btn:active:not(:disabled),
+.transform-toggle-btn:active:not(:disabled) { transform: scale(0.97); }
+.transform-mode-btn.active,
+.transform-toggle-btn.active {
+    background: rgba(99,90,245,0.72);
+    border-color: rgba(147,140,255,0.95);
+    color: #fff;
+    font-weight: 600;
+    box-shadow: 0 0 12px rgba(99,90,245,0.5);
+}
+.transform-mode-btn.active kbd,
+.transform-toggle-btn.active kbd {
+    background: rgba(0,0,0,0.3);
+    border-color: rgba(255,255,255,0.35);
+    color: #fff;
+}
+.transform-mode-btn:disabled,
+.transform-toggle-btn:disabled,
+.transform-num:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+.transform-mode-btn kbd,
+.transform-toggle-btn kbd {
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(0,0,0,0.35);
+    border: 1px solid rgba(255,255,255,0.18);
+    font-size: 10px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    color: #d7d7e0;
+}
+
+/* Action row — Move PC / Reset / Export share one grid so they no longer
+   wrap awkwardly at 50% width each. */
+.transform-actions {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+}
+.transform-actions .transform-button {
+    width: 100%;
+    margin-top: 0;
+    padding: 9px 4px;
+    font-size: 12px;      /* keeps "Move PC" on one line at the 300px minimum */
+}
+
+/* Manual value entry */
+.transform-field { margin-bottom: 10px; }
+.transform-field:last-child { margin-bottom: 0; }
+.transform-field-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 5px;
+}
+.transform-axes {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+}
+.transform-axis {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+}
+.transform-axis > span {
+    flex: 0 0 auto;
+    font-size: 11px;
+    color: #7f7f8a;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.transform-num {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 5px 6px;
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.18);
+    background: rgba(255,255,255,0.07);
+    color: #fafafa;
+    font-size: 12px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    transition: border-color .15s, background .15s, box-shadow .15s;
+    -moz-appearance: textfield;
+}
+.transform-num::-webkit-outer-spin-button,
+.transform-num::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.transform-num:focus {
+    outline: none;
+    border-color: #6e6bff;
+    background: rgba(255,255,255,0.12);
+    box-shadow: 0 0 0 2px rgba(79,70,229,0.3);
+}
+.transform-hint {
+    font-size: 11px;
+    color: #7f7f8a;
+    margin-bottom: 8px;
+}
+`;
+
+
+// ─────────────────────────────────────────────────────────────────────
+//  Gizmo state.
+//  The proxy, the transform it was last sampled at, the coupling flag and the
+//  current gizmo mode live at module scope so the panel's buttons and the
+//  keyboard shortcuts drive one and the same state. They used to be locals of
+//  toggleTransformControls(), which also meant a fresh window keydown listener
+//  was registered for every point cloud the user selected — after two
+//  selections "D" toggled coupling twice per press and looked dead.
+// ─────────────────────────────────────────────────────────────────────
 let control;
 let axesHelper;
+let proxy;
+let proxyInitPos, proxyInitQuat, proxyInitScale;
+let coupled = true;
+let transformMode = 'translate';
 
 let pcStartingTransforms = [];
 let pcStartingTransformsLoad = [];
@@ -343,17 +494,171 @@ function movePCtoProxy(pc){
     pc.position.set(camPos.x, camPos.y, camPos.z);
 }
 
+/**
+ * Push the proxy's movement since the last sample onto the selected point
+ * cloud. Registered as the gizmo's "change" listener while coupling is on.
+ */
+function coupleProxyToPC() {
+    if (!coupled || !proxy || !proxyInitPos) return;
+
+    const pc = selectedPC;
+    if (!pc) return;
+
+    const proxyPos = proxy.position.clone();
+    const proxyPosChange = proxyPos.sub(proxyInitPos);
+
+    const currentQuat = proxy.quaternion.clone();
+    // TransformControls runs in world space (its `space` property defaults to
+    // "world") and writes  quaternion = delta_world * quaternionStart. The
+    // world-space delta is therefore current * start⁻¹ — a POST-multiply. The old
+    // start⁻¹ * current is the delta expressed in the proxy's own body frame,
+    // which was then applied below as though it were a world rotation. The two
+    // agree only while the proxy sits at identity, i.e. up to the first rotation.
+    const deltaQuat = currentQuat.clone()
+        .multiply(proxyInitQuat.clone().invert())
+        .normalize();
+
+    const currentScale = proxy.scale.clone();
+    const deltaScale = currentScale.divide(proxyInitScale);
+
+    // translateX/Y/Z move along the OBJECT'S OWN axes (they route through
+    // translateOnAxis, which applies obj.quaternion to the axis). Feeding them a
+    // world-space delta meant that once the cloud was rotated, dragging the X
+    // handle walked it along its own rotated X — the axes appeared welded to the
+    // object and one direction became unreachable. The gizmo delta is already
+    // world-space, so add it to the position directly.
+    pc.position.add(proxyPosChange);
+
+    const pivot = proxy.position.clone();    // cube position
+
+    rotateAroundPointWithQuaternion(pc, pivot, deltaQuat);
+
+    scaleAroundPoint(pc, pivot, deltaScale);
+
+    captureProxyStart();
+
+    updateTransformPanel(pc);
+}
+
+/** Re-baseline the proxy so the next gizmo change reports a delta from here. */
+function captureProxyStart() {
+    if (!proxy) return;
+    proxyInitPos = proxy.position.clone();
+    proxyInitQuat = proxy.quaternion.clone();
+    proxyInitScale = proxy.scale.clone();
+}
+
+/**
+ * Couple / decouple the point cloud from the proxy. Entry point for both the
+ * "D" hotkey and the panel's Couple Proxy button.
+ */
+function setCoupled(isCoupled) {
+    coupled = isCoupled;
+
+    if (control) {
+        // Always drop first: re-adding the same listener twice would apply every
+        // delta twice.
+        control.removeEventListener('change', coupleProxyToPC);
+        if (isCoupled) {
+            captureProxyStart();
+            control.addEventListener('change', coupleProxyToPC);
+        }
+    }
+
+    if (!isCoupled) proxyInitPos = null;
+
+    setCoupledState(isCoupled);
+}
+
+/**
+ * Switch the gizmo between translate / rotate / scale. Entry point for the
+ * T / R / S hotkeys and the panel's mode buttons.
+ */
+function setTransformMode(mode) {
+    transformMode = mode;
+    if (control) control.setMode(mode);
+
+    const buttons = document.querySelectorAll("#transformPanel .transform-mode-btn");
+    for (const btn of buttons) {
+        btn.classList.toggle("active", btn.dataset.mode === mode);
+    }
+}
+
+/** Enable the mode buttons and value fields only once a cloud is selected. */
+function setTransformUIEnabled(enabled) {
+    const els = document.querySelectorAll(
+        "#transformPanel .transform-mode-btn, #transformPanel .transform-num, #transformPanel .transform-toggle-btn"
+    );
+    for (const el of els) el.disabled = !enabled;
+}
+
+/**
+ * Tear down the current gizmo, proxy and axes. Selecting a second point cloud
+ * used to only detach() the old control, leaving it and its axes helper parented
+ * to the scene for the rest of the session.
+ */
+function disposeTransformControls() {
+    if (control) {
+        control.removeEventListener('change', coupleProxyToPC);
+        control.detach();
+        if (control.parent) control.parent.remove(control);
+        if (typeof control.dispose === 'function') control.dispose();
+        control = null;
+    }
+    if (proxy) {
+        if (proxy.parent) proxy.parent.remove(proxy);
+        if (proxy.geometry) proxy.geometry.dispose();
+        if (proxy.material) proxy.material.dispose();
+        proxy = null;
+    }
+    if (axesHelper) {
+        if (axesHelper.parent) axesHelper.parent.remove(axesHelper);
+        axesHelper = null;
+    }
+    proxyInitPos = proxyInitQuat = proxyInitScale = null;
+}
+
+// Registered once, at module load, instead of once per point-cloud selection.
+// It no-ops unless the panel is open with a live gizmo, and ignores keystrokes
+// typed into the search box or the value fields — otherwise typing a cloud name
+// containing "s" silently flipped the gizmo into scale mode.
+window.addEventListener('keydown', e => {
+    if (!control || !document.getElementById("transformPanel")) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+    const t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA"
+        || t.tagName === "SELECT" || t.isContentEditable)) return;
+
+    switch (e.key.toLowerCase()) {
+        case 'd':
+            setCoupled(!coupled);
+            break;
+        case 't':
+            setTransformMode('translate');
+            break;
+        case 'r':
+            setTransformMode('rotate');
+            break;
+        case 's':
+            setTransformMode('scale');
+            break;
+    }
+});
+
 function toggleTransformControls(pc) {
 
     if (selectedID !== "earth") {
         viewer.setEDLEnabled(false);
     }
 
+    disposeTransformControls();
+
     axesHelper = new THREE.AxesHelper(10000);
 
     const geometry = new THREE.BoxGeometry( 0.01, 0.01, 0.01);
     const material = new THREE.MeshBasicMaterial({visible: false});
-    const proxy = new THREE.Mesh(geometry, material);
+    proxy = new THREE.Mesh(geometry, material);
 
     const camPos = viewer.scene.view.getPivot().clone();
     proxy.position.copy(camPos);
@@ -391,95 +696,13 @@ function toggleTransformControls(pc) {
     //     axesHelper.position.copy(camPos);
     // }
 
+    // Carry the mode the user last picked over to the new gizmo.
+    setTransformMode(transformMode);
 
+    // Samples the proxy and wires up the change listener.
+    setCoupled(true);
 
-    let proxyInitPos;
-    let proxyInitQuat;
-    let proxyInitScale;
-
-    function coupleProxyToPC(){
-        if(!coupled) return;
-        
-        const proxyPos = proxy.position.clone();
-        const proxyPosChange = proxyPos.sub(proxyInitPos);
-        
-        const currentQuat = proxy.quaternion.clone();
-        // TransformControls runs in world space (its `space` property defaults to
-        // "world") and writes  quaternion = delta_world * quaternionStart. The
-        // world-space delta is therefore current * start⁻¹ — a POST-multiply. The old
-        // start⁻¹ * current is the delta expressed in the proxy's own body frame,
-        // which was then applied below as though it were a world rotation. The two
-        // agree only while the proxy sits at identity, i.e. up to the first rotation.
-        const deltaQuat = currentQuat.clone()
-            .multiply(proxyInitQuat.clone().invert())
-            .normalize();
-
-        const currentScale = proxy.scale.clone();
-        const deltaScale = currentScale.divide(proxyInitScale);
-
-
-        // translateX/Y/Z move along the OBJECT'S OWN axes (they route through
-        // translateOnAxis, which applies obj.quaternion to the axis). Feeding them a
-        // world-space delta meant that once the cloud was rotated, dragging the X
-        // handle walked it along its own rotated X — the axes appeared welded to the
-        // object and one direction became unreachable. The gizmo delta is already
-        // world-space, so add it to the position directly.
-        pc.position.add(proxyPosChange);
-
-        const pivot = proxy.position.clone();    // cube position
-
-        rotateAroundPointWithQuaternion(pc, pivot, deltaQuat);
-
-        scaleAroundPoint(pc, pivot, deltaScale);
-
-        proxyInitPos = proxy.position.clone();
-        proxyInitQuat = proxy.quaternion.clone();
-        proxyInitScale = proxy.scale.clone();
-
-        updateTransformPanel(pc);
-
-    }
-
-
-    let coupled = true;
-    proxyInitPos = proxy.position.clone();
-    proxyInitQuat = proxy.quaternion.clone();
-    proxyInitScale = proxy.scale.clone();
-    control.addEventListener( 'change', coupleProxyToPC );
-    setCoupledState(true);
-
-    window.addEventListener( 'keydown', e => {
-        switch(e.key.toLowerCase()){
-
-            case 'd':
-                if(!coupled){
-                    coupled = true;
-                    setCoupledState(true);
-                    proxyInitPos = proxy.position.clone();
-                    proxyInitQuat = proxy.quaternion.clone();
-                    proxyInitScale = proxy.scale.clone();
-                    control.addEventListener( 'change', coupleProxyToPC );
-                }
-                else{
-                    coupled = false;
-                    setCoupledState(false);
-                    control.removeEventListener( 'change', coupleProxyToPC);
-                    proxyInitPos = null;
-                }
-                break;
-
-            case 'w':
-                control.setMode('translate');
-                break;
-            case 'r':
-                control.setMode('rotate');
-                break;
-            case 's':
-                control.setMode('scale');
-                break;
-        }
-    });
-
+    setTransformUIEnabled(true);
 
     control.addEventListener( 'mouseDown', e => {
         viewer.controls.enabled = false;
@@ -537,50 +760,84 @@ function openTransformPanel() {
         </div>
 
         <div id="transform-function" class="transform-section">
-            <div class="transform-row">
-                <span class="transform-label">Position</span>
-                <span class="transform-value" id="transform-pos">x: 0, y: 0, z: 0</span>
-            </div>
-            <div class="transform-offset" id="transform-pos-offset">Δx: 0, Δy: 0, Δz: 0</div>
+            <div class="transform-subtitle">Values</div>
+            <div class="transform-hint">Drag the gizmo, or type a value and press Enter.</div>
 
-            <div class="transform-row">
-                <span class="transform-label">Rotation</span>
-                <span class="transform-value" id="transform-rot">x: 0°, y: 0°, z: 0°</span>
+            <div class="transform-field">
+                <div class="transform-field-head">
+                    <span class="transform-label">Position</span>
+                </div>
+                <div class="transform-axes">
+                    <label class="transform-axis"><span>X</span><input id="tf-pos-x" class="transform-num" type="number" step="0.1" disabled></label>
+                    <label class="transform-axis"><span>Y</span><input id="tf-pos-y" class="transform-num" type="number" step="0.1" disabled></label>
+                    <label class="transform-axis"><span>Z</span><input id="tf-pos-z" class="transform-num" type="number" step="0.1" disabled></label>
+                </div>
+                <div class="transform-offset" id="transform-pos-offset">Δx: 0, Δy: 0, Δz: 0</div>
             </div>
-            <div class="transform-offset" id="transform-rot-offset">Δx: 0°, Δy: 0°, Δz: 0°</div>
 
-            <div class="transform-row">
-                <span class="transform-label">Scale</span>
-                <span class="transform-value" id="transform-scale">x: 1, y: 1, z: 1</span>
+            <div class="transform-field">
+                <div class="transform-field-head">
+                    <span class="transform-label">Rotation (°)</span>
+                </div>
+                <div class="transform-axes">
+                    <label class="transform-axis"><span>X</span><input id="tf-rot-x" class="transform-num" type="number" step="1" disabled></label>
+                    <label class="transform-axis"><span>Y</span><input id="tf-rot-y" class="transform-num" type="number" step="1" disabled></label>
+                    <label class="transform-axis"><span>Z</span><input id="tf-rot-z" class="transform-num" type="number" step="1" disabled></label>
+                </div>
+                <div class="transform-offset" id="transform-rot-offset">Δx: 0°, Δy: 0°, Δz: 0°</div>
             </div>
-            <div class="transform-offset" id="transform-scale-offset">Δsx: 0, Δsy: 0, Δsz: 0</div>
-            
+
+            <div class="transform-field">
+                <div class="transform-field-head">
+                    <span class="transform-label">Scale</span>
+                </div>
+                <div class="transform-axes">
+                    <label class="transform-axis"><span>X</span><input id="tf-scale-x" class="transform-num" type="number" step="0.01" disabled></label>
+                    <label class="transform-axis"><span>Y</span><input id="tf-scale-y" class="transform-num" type="number" step="0.01" disabled></label>
+                    <label class="transform-axis"><span>Z</span><input id="tf-scale-z" class="transform-num" type="number" step="0.01" disabled></label>
+                </div>
+                <div class="transform-offset" id="transform-scale-offset">Δsx: 0, Δsy: 0, Δsz: 0</div>
+            </div>
         </div>
 
         <div class="transform-section">
-            <button class="transform-button" id="move-pc-to-proxy-btn">Move PC</button><button class="transform-button" id="reset-transform-btn"   >Reset</button><button class="transform-button" id="export-transform-btn"   >Export</button>
+            <div class="transform-subtitle">Gizmo Mode</div>
+            <div class="transform-modes">
+                <button class="transform-mode-btn" data-mode="translate" disabled>Move <kbd>T</kbd></button>
+                <button class="transform-mode-btn" data-mode="rotate"    disabled>Rotate <kbd>R</kbd></button>
+                <button class="transform-mode-btn" data-mode="scale"     disabled>Scale <kbd>S</kbd></button>
+            </div>
+            <button class="transform-toggle-btn" id="toggle-couple-btn" disabled>Couple Proxy <kbd>D</kbd></button>
         </div>
 
-            <div class="transform-section transform-shortcuts">
-        <div class="transform-subtitle">Controls</div>
+        <div class="transform-section">
+            <div class="transform-actions">
+                <button class="transform-button" id="move-pc-to-proxy-btn">Move PC</button>
+                <button class="transform-button" id="reset-transform-btn">Reset</button>
+                <button class="transform-button" id="export-transform-btn">Export</button>
+            </div>
+        </div>
 
-        <div class="shortcut-row">
-            <span class="shortcut-key">D</span>
-            <span class="shortcut-desc">Couple / decouple proxy</span>
+        <div class="transform-section transform-shortcuts">
+            <div class="transform-subtitle">Shortcuts</div>
+
+            <div class="shortcut-row">
+                <span class="shortcut-key">D</span>
+                <span class="shortcut-desc">Couple / decouple proxy</span>
+            </div>
+            <div class="shortcut-row">
+                <span class="shortcut-key">T</span>
+                <span class="shortcut-desc">Translate mode</span>
+            </div>
+            <div class="shortcut-row">
+                <span class="shortcut-key">R</span>
+                <span class="shortcut-desc">Rotate mode</span>
+            </div>
+            <div class="shortcut-row">
+                <span class="shortcut-key">S</span>
+                <span class="shortcut-desc">Scale mode</span>
+            </div>
         </div>
-        <div class="shortcut-row">
-            <span class="shortcut-key">W</span>
-            <span class="shortcut-desc">Translate mode</span>
-        </div>
-        <div class="shortcut-row">
-            <span class="shortcut-key">R</span>
-            <span class="shortcut-desc">Rotate mode</span>
-        </div>
-        <div class="shortcut-row">
-            <span class="shortcut-key">S</span>
-            <span class="shortcut-desc">Scale mode</span>
-        </div>
-    </div>
 
     `;
 
@@ -695,6 +952,66 @@ function updateExportPanel(){
     innerCode.value = window.exportCode;
 }
 
+// The nine editable value fields, in the order they are read back.
+const MANUAL_FIELD_IDS = [
+    "tf-pos-x",   "tf-pos-y",   "tf-pos-z",
+    "tf-rot-x",   "tf-rot-y",   "tf-rot-z",
+    "tf-scale-x", "tf-scale-y", "tf-scale-z",
+];
+
+const DEG = Math.PI / 180;
+
+/**
+ * Write a value into one of the editable fields, unless the user is currently
+ * typing in it — a gizmo drag refreshes the panel continuously, and rewriting a
+ * focused field would eat the value being typed.
+ */
+function setNumField(id, value, digits) {
+    const el = document.getElementById(id);
+    if (!el || el === document.activeElement) return;
+    el.value = value.toFixed(digits);
+}
+
+/**
+ * Read the nine fields back onto the selected point cloud. Unlike the gizmo —
+ * which applies deltas about the proxy — these are absolute values in the
+ * cloud's own frame, so rotation and scale pivot on its origin.
+ */
+function applyManualTransform() {
+    const pc = selectedPC;
+    if (!pc) return;
+
+    const read = (id, fallback) => {
+        const el = document.getElementById(id);
+        if (!el) return fallback;
+        const v = parseFloat(el.value);
+        return Number.isFinite(v) ? v : fallback;      // blank / garbage: leave as-is
+    };
+
+    pc.position.set(
+        read("tf-pos-x", pc.position.x),
+        read("tf-pos-y", pc.position.y),
+        read("tf-pos-z", pc.position.z)
+    );
+
+    // Written through pc.rotation, in the cloud's existing Euler order — the same
+    // quantity the panel prints, so typing back what is shown is a no-op.
+    pc.rotation.set(
+        read("tf-rot-x", pc.rotation.x / DEG) * DEG,
+        read("tf-rot-y", pc.rotation.y / DEG) * DEG,
+        read("tf-rot-z", pc.rotation.z / DEG) * DEG
+    );
+
+    // A zero on any scale axis collapses the matrix and cannot be undone by
+    // typing a value back in, so keep the current axis instead.
+    const sx = read("tf-scale-x", pc.scale.x);
+    const sy = read("tf-scale-y", pc.scale.y);
+    const sz = read("tf-scale-z", pc.scale.z);
+    pc.scale.set(sx || pc.scale.x, sy || pc.scale.y, sz || pc.scale.z);
+
+    updateTransformPanel(pc);
+}
+
 function updateTransformPanel(pc) {
     if (!pc) return;
 
@@ -702,14 +1019,17 @@ function updateTransformPanel(pc) {
     const r = pc.rotation;
     const s = pc.scale;
 
-    document.getElementById("transform-pos").textContent =
-        `x: ${p.x.toFixed(3)}, y: ${p.y.toFixed(3)}, z: ${p.z.toFixed(3)}`;
+    setNumField("tf-pos-x", p.x, 3);
+    setNumField("tf-pos-y", p.y, 3);
+    setNumField("tf-pos-z", p.z, 3);
 
-    document.getElementById("transform-rot").textContent =
-        `x: ${(r.x*180/Math.PI).toFixed(1)}°, y: ${(r.y*180/Math.PI).toFixed(1)}°, z: ${(r.z*180/Math.PI).toFixed(1)}°`;
+    setNumField("tf-rot-x", r.x / DEG, 2);
+    setNumField("tf-rot-y", r.y / DEG, 2);
+    setNumField("tf-rot-z", r.z / DEG, 2);
 
-    document.getElementById("transform-scale").textContent =
-        `x: ${s.x.toFixed(3)}, y: ${s.y.toFixed(3)}, z: ${s.z.toFixed(3)}`;
+    setNumField("tf-scale-x", s.x, 4);
+    setNumField("tf-scale-y", s.y, 4);
+    setNumField("tf-scale-z", s.z, 4);
 
     // -------------------------------
     // ORIGINAL VALUES AT LOAD TIME
@@ -733,13 +1053,12 @@ function updateTransformPanel(pc) {
     // difference in any frame — it just happened to read as ~0 at startup.
     const qRel = pc.quaternion.clone().multiply(og.quaternion.clone().invert());
     const eRel = new THREE.Euler().setFromQuaternion(qRel.normalize(), "XYZ");
-    const dr_rad = { x: eRel.x, y: eRel.y, z: eRel.z };
 
     // ROTATION OFFSET (degrees)
     const dr = {
-        x: dr_rad.x * 180/Math.PI,
-        y: dr_rad.y * 180/Math.PI,
-        z: dr_rad.z * 180/Math.PI
+        x: eRel.x / DEG,
+        y: eRel.y / DEG,
+        z: eRel.z / DEG
     };
 
     document.getElementById("transform-rot-offset").textContent =
@@ -756,19 +1075,7 @@ function updateTransformPanel(pc) {
         `Δsx: ${ds.x.toFixed(3)}, Δsy: ${ds.y.toFixed(3)}, Δsz: ${ds.z.toFixed(3)}`;
 
 
-
-
     //export panel
-
-//     window.exportCode = `pointcloud.translateX(${p.x.toFixed(4)});
-// pointcloud.translateY(${p.y.toFixed(4)});
-// pointcloud.translateZ(${p.z.toFixed(4)});
-
-// pointcloud.rotateX(${r.x.toFixed(4)});
-// pointcloud.rotateY(${r.y.toFixed(4)});
-// pointcloud.rotateZ(${r.z.toFixed(4)});
-
-// pointcloud.scale.set(${s.x.toFixed(4)}, ${s.y.toFixed(4)}, ${s.z.toFixed(4)});`;
 
     window.exportCode =
 `pointcloud.position.set(${p.x.toFixed(4)}, ${p.y.toFixed(4)}, ${p.z.toFixed(4)});
@@ -777,12 +1084,8 @@ pointcloud.rotation.set(${r.x.toFixed(4)}, ${r.y.toFixed(4)}, ${r.z.toFixed(4)})
 
 pointcloud.scale.set(${s.x.toFixed(4)}, ${s.y.toFixed(4)}, ${s.z.toFixed(4)});`;
 
-updateExportPanel();
-
-
     updateExportPanel();
 }
-
 
 let selectedPC;
 let selectedID;
@@ -839,13 +1142,38 @@ function initializeTransformPCSelector() {
         movePCtoProxy(selectedPC);
     }
 
+    // Gizmo mode + coupling buttons — the same entry points the T/R/S/D
+    // hotkeys call, so the two stay in sync whichever one is used.
+    for (const btn of document.querySelectorAll("#transformPanel .transform-mode-btn")) {
+        btn.onclick = () => setTransformMode(btn.dataset.mode);
+    }
+
+    const coupleBtn = document.getElementById("toggle-couple-btn");
+    coupleBtn.onclick = () => setCoupled(!coupled);
+
+    // Manual value entry. "change" covers Enter, blur and the arrow-key
+    // steppers; the explicit Enter handler makes committing without blurring
+    // reliable across browsers.
+    for (const id of MANUAL_FIELD_IDS) {
+        const field = document.getElementById(id);
+        if (!field) continue;
+
+        field.addEventListener("change", applyManualTransform);
+        field.addEventListener("keydown", e => {
+            if (e.key === "Enter") {
+                e.preventDefault();
+                applyManualTransform();
+            }
+        });
+    }
+
+    setTransformUIEnabled(false);   // nothing to transform until a cloud is picked
+
     // When user selects a PC
     pcSelect.addEventListener("change", () => {
         selectedID = pcSelect.value;
         selectedPC = window.pointcloudMap[selectedID];
         window.activeTransformPC = selectedPC;
-
-        if(control) control.detach();
 
         toggleTransformControls(selectedPC);
         updateTransformPanel(selectedPC);
@@ -861,11 +1189,14 @@ function setCoupledState(isCoupled) {
         pill.classList.toggle("coupled", isCoupled);
         pill.classList.toggle("decoupled", !isCoupled);
     }
+
+    const coupleBtn = document.getElementById("toggle-couple-btn");
+    if (coupleBtn) coupleBtn.classList.toggle("active", isCoupled);
 }
 
 
 function closeTransformPanel(){
-    if(control) control.detach();
+    disposeTransformControls();
     removeAllAxisHelpers()
 
     if (selectedID !== "earth") {

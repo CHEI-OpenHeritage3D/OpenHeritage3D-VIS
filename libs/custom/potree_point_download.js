@@ -774,12 +774,42 @@ function getEstimatedTotalPoints(selectionBox) {
     return estimatedPoints;
 }
 
+// Deepest level present in the hierarchy as currently known. For COPC that
+// grows as hierarchy pages load, so it is a lower bound, not the file's depth.
+function deepestKnownLevel(root) {
+    let deepest = 0;
+    const stack = [root];
+    while (stack.length) {
+        const node = stack.pop();
+        if (!node) continue;
+        if (node.level > deepest) deepest = node.level;
+        for (let i = 0; i < 8; i++) if (node.children[i]) stack.push(node.children[i]);
+    }
+    return deepest;
+}
+
 // Pull hierarchy.depth from the loaded metadata (Potree v2). Returns
 // null for v1 clouds, where there's no single authoritative number.
 function getMaxDepth(pc) {
     const v2 = pc.pcoGeometry?.loader?.metadata?.hierarchy?.depth;
     if (v2 != null) return v2;
+    // COPC has no depth field. Use what the hierarchy shows so the LOD slider and
+    // the density estimate stay meaningful; effectiveMaxDepth() below keeps that
+    // lower bound from truncating an export.
+    if (pc.pcoGeometry?.type === "copc") return deepestKnownLevel(pc.pcoGeometry.root);
     return null;
+}
+
+/**
+ * Per-cloud depth cap for an export. A COPC file only reveals deeper levels as
+ * its hierarchy pages load, which happens *while* the export runs — so capping at
+ * the depth known beforehand would silently drop the finest points. When the user
+ * hasn't asked for anything shallower than that, export without a cap; a lower
+ * slider value is still honoured.
+ */
+function effectiveMaxDepth(pc, maxDepth) {
+    if (pc.pcoGeometry?.type !== "copc") return maxDepth;
+    return maxDepth >= deepestKnownLevel(pc.pcoGeometry.root) ? Number.MAX_SAFE_INTEGER : maxDepth;
 }
 
 // Take the deepest depth across visible clouds. maxDepth is a cap, so
@@ -1025,12 +1055,15 @@ function downloadSingleTile(pointclouds, tileBox, maxDepth, namePrefix, ix, iy, 
         const finalize = () => { if (--pending === 0) resolve(written); };
 
         for (const pc of pointclouds) {
-            
-            applyLedgerEditsForTile(pc, tileBox, maxDepth);
-            
+
+            // COPC discovers deeper levels mid-export; don't cap them away.
+            const pcMaxDepth = effectiveMaxDepth(pc, maxDepth);
+
+            applyLedgerEditsForTile(pc, tileBox, pcMaxDepth);
+
             const points = new Potree.Points();
 
-            pc.getPointsInBox3(tileBox, maxDepth, {
+            pc.getPointsInBox3(tileBox, pcMaxDepth, {
                 onProgress: (e) => {
                     points.add(e.points);
                     
