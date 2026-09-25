@@ -641,6 +641,18 @@ function toggleZoneSearchMenu() {
     _refreshIsolatedHighlight();
 }
 
+// Rebuild the search panel in place if it's currently open. Oriented-image
+// sets finish loading asynchronously (network fetch of calibration/pose
+// data), well after the panel may have already been rendered — without this,
+// a freshly added/imported image set never appears until the user manually
+// closes and reopens the panel. No-op when the panel isn't open.
+function _refreshZoneSearchPanel() {
+    const existingMenu = document.getElementById("zoneSearchMenu");
+    if (!existingMenu) return;
+    existingMenu.remove();
+    toggleZoneSearchMenu();
+}
+
 // ── Recursive tree renderer ──────────────────────────────────
 function _renderSearchNode(zone, container, depth) {
     const hasChildren = zone.children && zone.children.length > 0;

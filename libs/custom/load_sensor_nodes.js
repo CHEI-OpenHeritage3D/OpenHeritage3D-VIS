@@ -2,6 +2,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const zoneSearchButton = document.getElementById("searchCamerasButton");
     zoneSearchButton.addEventListener("click", toggleSearchCameraMenu);
     document.addEventListener('mousemove', onMouseMove, false);
+    document.addEventListener('pointerdown', onSensorPointerDown, true);
+    document.addEventListener('pointerup', onSensorPointerUp, true);
+    document.addEventListener('keydown', onSensorKeyDown);
+    window.addEventListener('resize', repositionSensorDialog);
 
     viewer.addEventListener('camera_changed', () => {
       toggleConeRadius();
@@ -9,6 +13,7 @@ document.addEventListener("DOMContentLoaded", () => {
       updateCameraLight();
     }); 
     viewer.addEventListener('camera_changed', debouncedSearchList);
+    viewer.addEventListener('camera_changed', repositionSensorDialog);
 
 
 });
@@ -337,6 +342,202 @@ style.textContent += `
 }
 `;
 
+style.textContent += `
+
+/* ══════════════════════════════════════════════════════════
+   Sensor hover dialog
+   Same glass treatment as #searchCameraMenu and the 360 panel.
+   ══════════════════════════════════════════════════════════ */
+
+#sensor-hover-dialog {
+    position: fixed;
+    z-index: 9998;
+    display: none;
+    box-sizing: border-box;
+
+    min-width: 210px;
+    max-width: 300px;
+    padding: 12px 14px;
+
+    background: rgba(20, 20, 26, 0.62);
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 14px;
+    box-shadow: 0 0 28px rgba(0,0,0,0.55);
+
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    color: #f2f2f7;
+
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+    transition: opacity 0.16s ease, transform 0.16s ease;
+}
+#sensor-hover-dialog * { box-sizing: border-box; }
+
+#sensor-hover-dialog.visible {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+}
+
+/* A generous invisible skirt: the cursor can cut a corner on its way over
+   without the dialog deciding it has been abandoned. It is a positioned
+   pseudo-element, so it would otherwise paint OVER the contents and eat every
+   click — the rows below are positioned too, which puts them back on top of
+   it in tree order. */
+#sensor-hover-dialog::before {
+    content: "";
+    position: absolute;
+    inset: -18px;
+    border-radius: 24px;
+    z-index: 0;
+}
+
+.sensor-hover-header,
+#sensor-hover-list,
+.sensor-hover-hint {
+    position: relative;
+    z-index: 1;
+}
+
+.sensor-hover-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.sensor-hover-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: #6e6bff;
+    box-shadow: 0 0 8px rgba(110, 107, 255, 0.8);
+}
+
+.sensor-hover-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #888;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.sensor-hover-close {
+    display: none;
+    flex: 0 0 auto;
+    width: 22px;
+    height: 22px;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 6px;
+    background: rgba(255,255,255,0.05);
+    color: #cfcfd6;
+    font: 14px/1 'Segoe UI', system-ui, sans-serif;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+#sensor-hover-dialog.pinned .sensor-hover-close { display: inline-flex; }
+.sensor-hover-close:hover {
+    background: rgba(220, 38, 38, 0.4);
+    border-color: rgba(239, 68, 68, 0.5);
+    color: #fecaca;
+}
+
+#sensor-hover-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    max-height: 46vh;
+    overflow-y: auto;
+    overflow-x: hidden;
+    margin: 0 -4px 0 0;
+    padding-right: 4px;
+}
+#sensor-hover-list::-webkit-scrollbar { width: 5px; }
+#sensor-hover-list::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.18);
+    border-radius: 3px;
+}
+
+.sensor-hover-hint {
+    margin-top: 10px;
+    font-size: 11px;
+    color: #777;
+}
+#sensor-hover-dialog.pinned .sensor-hover-hint::after {
+    content: " — Esc to close";
+}
+
+/* ── Camera rows, here and in the search results ─────────── */
+
+.sensor-btn,
+#ann_search_bar_list li a {
+    display: block;
+    width: 100%;
+    margin: 0;
+    padding: 8px 11px;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 9px;
+    background: rgba(255,255,255,0.04);
+    color: #f0f0f5;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-size: 13.5px;
+    font-weight: 500;
+    text-align: left;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, color 0.12s, box-shadow 0.12s;
+}
+
+.sensor-btn:hover,
+.sensor-btn:focus-visible,
+#ann_search_bar_list li a:hover,
+#ann_search_bar_list li a:focus-visible {
+    background: rgba(79,70,229,0.28);
+    border-color: rgba(79,70,229,0.45);
+    color: #fff;
+    box-shadow: 0 0 12px rgba(79,70,229,0.18);
+    outline: none;
+    transform: none;        /* the old rule scaled these; it jittered the list */
+}
+
+#ann_search_bar_list li { margin: 0 0 5px 0; }
+#ann_search_bar_list { border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px; }
+
+/* The legacy #ann_search_bar rules above are an ID selector, so they beat
+   .zs-search-input and left a white box sitting on the dark panel. Restate
+   the dark treatment here (last block wins) rather than relying on
+   zone_search.js being loaded. */
+#ann_search_bar {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 9px 14px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 8px;
+    color: #fafafa;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-size: 14px;
+    transition: border-color .15s, background .15s, box-shadow .15s;
+}
+#ann_search_bar::placeholder { color: #888; }
+#ann_search_bar:focus {
+    border-color: #6e6bff;
+    background: rgba(255,255,255,0.12);
+    box-shadow: 0 0 0 3px rgba(79,70,229,0.3);
+    outline: none;
+}
+`;
+
 function toggleSearchCameraMenu() {
     let existingMenu = document.getElementById("searchCameraMenu");
     if (existingMenu) {
@@ -582,7 +783,14 @@ function checkRayIntersections(mousePointer, camera, raycaster, scene, getFirstV
 }
 
 function onMouseMove(event) {
-    if (isHoveringDialog) return;   // dialog stays open
+    if (isHoveringDialog || sensorDialogPinned) return;   // dialog stays open
+
+    // The 360 overlay covers the scene; don't pop cone menus behind it.
+    if (window.in360View) {
+        cancelSensorDialogOpen();
+        hideSensorDialogNow();
+        return;
+    }
 
     const mousePointer = getMouseVector2(event);
     const raycaster = new THREE.Raycaster();
@@ -599,10 +807,10 @@ function onMouseMove(event) {
     if (intersections.length != 0) {
         onSensorNodeHover([intersections], event);
     } else {
-        restoreConeAppearance(currentHoveredCone);
-        currentHoveredCone = null;
+        // Keep the cone lit while the dialog is still on its way out, so the
+        // marker and its menu disappear together.
+        cancelSensorDialogOpen();
         hideSensorDialog();
-        clearHover();
     }
 }
 
@@ -612,16 +820,250 @@ function clearHover() {
     }
 }
 
+// ══════════════════════════════════════════════════════════════
+//  Sensor hover dialog
+//
+//  The old version rebuilt the button list and re-anchored the dialog to the
+//  cursor on every single mousemove, so the menu slid away as you reached for
+//  it and the button under the pointer was replaced mid-click. It also relied
+//  on isHoveringDialog to hold the dialog open, but nothing ever set that flag
+//  — there were no listeners on the dialog at all — so it always timed out.
+//
+//  Now: the dialog opens after a short hover so brushing past a cone doesn't
+//  flash it, anchors itself to the cone and stays put, only touches the DOM
+//  when the set of cameras actually changes, and stays open while the pointer
+//  is on it. Clicking a cone pins it until Esc, a click on empty space, or the
+//  close button.
+// ══════════════════════════════════════════════════════════════
+
+const SENSOR_HOVER_OPEN_DELAY  = 130;   // ms of dwell before the dialog appears
+const SENSOR_HOVER_CLOSE_DELAY = 420;   // ms of grace to reach the dialog
+
+let sensorDialogEl = null;
+let sensorDialogListEl = null;
+let sensorDialogHintEl = null;
+let sensorHoverOpenTimeout = null;
+let sensorDialogKey = null;        // which cameras are currently listed
+let sensorDialogPinned = false;
+
+function ensureSensorDialog() {
+    if (sensorDialogEl && sensorDialogEl.isConnected) return sensorDialogEl;
+
+    // The host page may already provide the markup; adopt it if so.
+    sensorDialogEl = document.getElementById("sensor-hover-dialog");
+    if (!sensorDialogEl) {
+        sensorDialogEl = document.createElement("div");
+        sensorDialogEl.id = "sensor-hover-dialog";
+        document.body.appendChild(sensorDialogEl);
+    }
+
+    sensorDialogListEl = document.getElementById("sensor-hover-list");
+    if (!sensorDialogListEl) {
+        sensorDialogEl.innerHTML = "";
+
+        const header = document.createElement("div");
+        header.className = "sensor-hover-header";
+
+        const dot = document.createElement("span");
+        dot.className = "sensor-hover-dot";
+
+        const title = document.createElement("span");
+        title.className = "sensor-hover-title";
+        title.textContent = "Cameras";
+
+        const close = document.createElement("button");
+        close.className = "sensor-hover-close";
+        close.type = "button";
+        close.title = "Close (Esc)";
+        close.textContent = "×";
+        close.addEventListener("click", (e) => {
+            e.stopPropagation();
+            unpinSensorDialog();
+            hideSensorDialogNow();
+        });
+
+        header.appendChild(dot);
+        header.appendChild(title);
+        header.appendChild(close);
+        sensorDialogEl.appendChild(header);
+
+        sensorDialogListEl = document.createElement("div");
+        sensorDialogListEl.id = "sensor-hover-list";
+        sensorDialogEl.appendChild(sensorDialogListEl);
+
+        sensorDialogHintEl = document.createElement("div");
+        sensorDialogHintEl.className = "sensor-hover-hint";
+        sensorDialogHintEl.textContent = "Click to open the 360° view";
+        sensorDialogEl.appendChild(sensorDialogHintEl);
+    }
+
+    // This is what was missing: while the pointer is on the dialog it must not
+    // be allowed to close, and onMouseMove must stop raycasting behind it.
+    sensorDialogEl.addEventListener("mouseenter", () => {
+        window.isHoveringDialog = true;
+        cancelSensorDialogHide();
+    });
+    sensorDialogEl.addEventListener("mouseleave", () => {
+        window.isHoveringDialog = false;
+        if (!sensorDialogPinned) scheduleSensorDialogHide();
+    });
+
+    return sensorDialogEl;
+}
+
+// A click on a marker pins its menu open — hovering is fine for a glance,
+// but picking from a list wants the menu to stay put. Anything that counts as
+// a drag (orbiting the scene) is not a click.
+let sensorPointerDownAt = null;
+
+function onSensorPointerDown(event) {
+    sensorPointerDownAt = { x: event.clientX, y: event.clientY };
+}
+
+function onSensorPointerUp(event) {
+    const from = sensorPointerDownAt;
+    sensorPointerDownAt = null;
+    if (!from || event.button !== 0) return;
+    if (Math.abs(event.clientX - from.x) > 4 || Math.abs(event.clientY - from.y) > 4) return;
+    if (window.in360View) return;
+
+    // Clicks inside the dialog are the dialog's own business.
+    if (sensorDialogEl && sensorDialogEl.contains(event.target)) return;
+
+    // Only care about clicks on the 3D scene, not on panels above it.
+    const overPanel = event.target && event.target.closest
+        && event.target.closest('#searchCameraMenu, #zoneSearchMenu, #photo360, #potree_sidebar_container, #potree_toolbar');
+    if (overPanel) return;
+
+    const hit = checkRayIntersections(
+        getMouseVector2(event),
+        viewer.scene.getActiveCamera(),
+        new THREE.Raycaster(),
+        viewer.scene.scene,
+        true
+    );
+
+    const cone = (hit && hit.object && hit.object._sensorNodes) ? hit.object : null;
+    if (cone) {
+        if (currentHoveredCone !== cone) {
+            if (currentHoveredCone) restoreConeAppearance(currentHoveredCone);
+            currentHoveredCone = cone;
+            hoverStartTime = performance.now();
+        }
+        cancelSensorDialogOpen();
+        showSensorDialog([cone], viewer.scene.getActiveCamera());
+        pinSensorDialog();
+    } else if (sensorDialogPinned) {
+        unpinSensorDialog();
+        hideSensorDialogNow();
+    }
+}
+
+function onSensorKeyDown(event) {
+    if (event.key !== 'Escape') return;
+    if (!isSensorDialogVisible()) return;
+    unpinSensorDialog();
+    hideSensorDialogNow();
+}
+
+function cancelSensorDialogHide() {
+    if (hoverHideTimeout) {
+        clearTimeout(hoverHideTimeout);
+        hoverHideTimeout = null;
+    }
+}
+
+function cancelSensorDialogOpen() {
+    if (sensorHoverOpenTimeout) {
+        clearTimeout(sensorHoverOpenTimeout);
+        sensorHoverOpenTimeout = null;
+    }
+}
+
+function isSensorDialogVisible() {
+    return !!(sensorDialogEl && sensorDialogEl.style.display === "block");
+}
+
+function pinSensorDialog() {
+    sensorDialogPinned = true;
+    if (sensorDialogEl) sensorDialogEl.classList.add("pinned");
+    cancelSensorDialogHide();
+}
+
+function unpinSensorDialog() {
+    sensorDialogPinned = false;
+    if (sensorDialogEl) sensorDialogEl.classList.remove("pinned");
+}
+
+// Anchor on the cone's resting place, not its live position — the hover
+// animation bobs the cone, which would make the dialog jitter.
+function getConeAnchor(cone, camera) {
+    const base = (cone.userData && cone.userData.basePosition) || cone.position;
+    const v = base.clone().project(camera);
+    return {
+        x: (v.x * 0.5 + 0.5) * window.innerWidth,
+        y: (-v.y * 0.5 + 0.5) * window.innerHeight
+    };
+}
+
+function placeSensorDialog(cone, camera) {
+    if (!sensorDialogEl || !cone) return;
+
+    const anchor = getConeAnchor(cone, camera);
+    const rect = sensorDialogEl.getBoundingClientRect();
+    const margin = 12;
+
+    // Prefer sitting to the lower-right of the marker, flipping when there is
+    // no room, so the dialog never covers the marker it belongs to.
+    let x = anchor.x + 18;
+    if (x + rect.width + margin > window.innerWidth) x = anchor.x - rect.width - 18;
+
+    let y = anchor.y + 14;
+    if (y + rect.height + margin > window.innerHeight) y = anchor.y - rect.height - 14;
+
+    x = Math.min(Math.max(x, margin), Math.max(margin, window.innerWidth - rect.width - margin));
+    y = Math.min(Math.max(y, margin), Math.max(margin, window.innerHeight - rect.height - margin));
+
+    sensorDialogEl.style.left = x + "px";
+    sensorDialogEl.style.top = y + "px";
+}
+
+// One string identifying exactly which cameras are on show, so the list is
+// only rebuilt when it would actually change.
+function sensorConesKey(cones) {
+    return cones
+        .map(c => (c._sensorNodes || []).map(n => n.id ?? n.name).join(","))
+        .join("|");
+}
+
+function buildSensorDialogList(cones) {
+    sensorDialogListEl.innerHTML = "";
+
+    const ordered = cones.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
+    for (const cone of ordered) {
+        for (const node of (cone._sensorNodes || [])) {
+            const btn = document.createElement("button");
+            btn.className = "sensor-btn";
+            btn.type = "button";
+            btn.textContent = node.name;
+            btn.title = `Open ${node.name}`;
+            btn.addEventListener("click", () => {
+                unpinSensorDialog();
+                hideSensorDialogNow();
+                onSensorNodeClick(node);
+            });
+            sensorDialogListEl.appendChild(btn);
+        }
+    }
+}
+
+
 function onSensorNodeHover(intersections, event) {
-    if (isHoveringDialog) return;
+    if (isHoveringDialog || sensorDialogPinned) return;
 
     if (!Array.isArray(intersections) || intersections.length === 0) {
         hideSensorDialog();
-        if(currentHoveredCone){
-          restoreConeAppearance(currentHoveredCone);
-          currentHoveredCone = null;
-          clearHover(); 
-        }
         return;
     }
 
@@ -635,7 +1077,7 @@ function onSensorNodeHover(intersections, event) {
     }
 
     const cone_main = cones[0];
-    
+
     if(cone_main !== currentHoveredCone){
       if(currentHoveredCone) restoreConeAppearance(currentHoveredCone);
 
@@ -643,8 +1085,28 @@ function onSensorNodeHover(intersections, event) {
       hoverStartTime = performance.now();
     }
 
+    // We are back on a cone, so any pending close is off.
+    cancelSensorDialogHide();
 
-    showSensorDialog(cones, viewer.scene.getActiveCamera(), event);
+    const camera = viewer.scene.getActiveCamera();
+
+    // Already showing these same cameras: don't touch the DOM and don't move
+    // the dialog — that is what made it feel like it was running away.
+    if (isSensorDialogVisible() && sensorConesKey(cones) === sensorDialogKey) return;
+
+    if (isSensorDialogVisible()) {
+        showSensorDialog(cones, camera);   // different cameras: swap contents now
+        return;
+    }
+
+    // Opening from nothing: wait out a short dwell so a cursor merely crossing
+    // the marker doesn't flash the menu.
+    if (sensorHoverOpenTimeout) return;
+    sensorHoverOpenTimeout = setTimeout(() => {
+        sensorHoverOpenTimeout = null;
+        if (currentHoveredCone !== cone_main) return;
+        showSensorDialog(cones, viewer.scene.getActiveCamera());
+    }, SENSOR_HOVER_OPEN_DELAY);
 }
 
 function restoreConeAppearance(cone) {
@@ -689,61 +1151,33 @@ function getScreenPosition(obj, camera) {
 }
 
 
-function showSensorDialog(cones, camera, event) {
-    const dialog = document.getElementById("sensor-hover-dialog");
-    const list = document.getElementById("sensor-hover-list");
+function showSensorDialog(cones, camera) {
+    if (!cones || cones.length === 0) return;
 
-    // Cancel any pending hide timeout
-    if (hoverHideTimeout) {
-        clearTimeout(hoverHideTimeout);
-        hoverHideTimeout = null;
+    ensureSensorDialog();
+    cancelSensorDialogHide();
+
+    const key = sensorConesKey(cones);
+    if (key !== sensorDialogKey) {
+        buildSensorDialogList(cones);
+        sensorDialogKey = key;
     }
 
-    // Clear old entries
-    list.innerHTML = "";
+    sensorDialogEl.style.display = "block";   // must be laid out before measuring
+    placeSensorDialog(cones[0], camera);
+    requestAnimationFrame(() => sensorDialogEl.classList.add("visible"));
+}
 
-    cones.sort((a,b) => a.name.localeCompare(b.name));
-    cones.forEach(cone => {
-    cone._sensorNodes.forEach((node) =>{
-
-      const btn = document.createElement("button");
-      btn.className = "sensor-btn";
-
-      btn.textContent = node.name;
-
-      btn.onclick = () => onSensorNodeClick(node);
-
-      list.appendChild(btn);
-
-    })
-  });
-
-
-    // Position dialog near the first cone
-    const anchor = getScreenPosition(cones[0], camera);
-    const mousePointer = getMouseVector2(event);
-
-    const mousePointerScreen = new THREE.Vector2(
-        (mousePointer.x * 0.5 + 0.5) * window.innerWidth,
-        (-mousePointer.y * 0.5 + 0.5) * window.innerHeight
-    );
-    // Now clamp dialog
-    dialog.style.display = "block"; // must be visible so we can measure size
-    const rect = dialog.getBoundingClientRect();
-
-    let x = mousePointerScreen.x;
-    let y = mousePointerScreen.y;
-
-    // Clamp to screen edges
-    x = Math.min(Math.max(x, 10), window.innerWidth - rect.width  - 10);
-    y = Math.min(Math.max(y, 10), window.innerHeight - rect.height - 10);
-
-    dialog.style.left = x + "px";
-    dialog.style.top  = y + "px";
+// Follow the marker when the scene moves underneath an open dialog.
+function repositionSensorDialog() {
+    if (!isSensorDialogVisible() || !currentHoveredCone) return;
+    placeSensorDialog(currentHoveredCone, viewer.scene.getActiveCamera());
 }
 
 function onSensorNodeClick(node) {
   // if(window.in360View) window.close360();
+  unpinSensorDialog();
+  hideSensorDialogNow();
   node.coneMarker.visible = false;
   window.open360(node);
 }
@@ -751,18 +1185,32 @@ function onSensorNodeClick(node) {
 window.onSensorNodeClick = onSensorNodeClick;
 
 
-function hideSensorDialog() {
-    if (isHoveringDialog) return;
-
-    // Delay hiding so the user can move the mouse to the dialog
-    hoverHideTimeout = setTimeout(() => {
-        if (!isHoveringDialog) {
-            document.getElementById("sensor-hover-dialog").style.display = "none";
-        }
-    }, 500);  // 200ms grace period
+function hideSensorDialogNow() {
+    cancelSensorDialogHide();
+    if (currentHoveredCone) {
+        restoreConeAppearance(currentHoveredCone);
+        currentHoveredCone = null;
+    }
+    if (!sensorDialogEl) return;
+    sensorDialogEl.classList.remove("visible");
+    sensorDialogEl.style.display = "none";
+    sensorDialogKey = null;
 }
 
+function scheduleSensorDialogHide() {
+    if (sensorDialogPinned || hoverHideTimeout) return;
+    hoverHideTimeout = setTimeout(() => {
+        hoverHideTimeout = null;
+        if (isHoveringDialog || sensorDialogPinned) return;
+        hideSensorDialogNow();
+    }, SENSOR_HOVER_CLOSE_DELAY);
+}
 
+// Kept under its old name because other code calls it.
+function hideSensorDialog() {
+    if (isHoveringDialog || sensorDialogPinned) return;
+    scheduleSensorDialogHide();
+}
 
 function getVisibleNodesFromCones(camera) {
     const frustum = new THREE.Frustum();

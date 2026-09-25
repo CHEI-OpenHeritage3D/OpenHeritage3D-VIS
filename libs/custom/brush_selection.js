@@ -150,23 +150,45 @@ style.textContent += `
 .brush-class-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 6px;
+    gap: 5px;
+    max-height: 190px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    align-content: start;
+    padding: 2px 4px 2px 0;
+    margin-right: -4px;
+}
+
+.brush-class-grid::-webkit-scrollbar {
+    width: 6px;
+}
+.brush-class-grid::-webkit-scrollbar-track {
+    background: transparent;
+}
+.brush-class-grid::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.15);
+    border-radius: 3px;
+}
+.brush-class-grid::-webkit-scrollbar-thumb:hover {
+    background: rgba(255,255,255,0.28);
 }
 
 .brush-class-btn {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 8px 10px;
+    gap: 6px;
+    padding: 5px 7px;
     border: 1px solid rgba(255,255,255,0.1);
-    border-radius: 8px;
+    border-radius: 6px;
     background: rgba(255,255,255,0.04);
     color: #e0e0e5;
-    font-size: 13px;
+    font-size: 12px;
+    line-height: 1.2;
     font-family: inherit;
     cursor: pointer;
     transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
     justify-content: flex-start;
+    min-width: 0;
 }
 .brush-class-btn:hover {
     background: rgba(255,255,255,0.08);
@@ -180,11 +202,19 @@ style.textContent += `
 }
 
 .brush-class-swatch {
-    width: 14px;
-    height: 14px;
-    border-radius: 4px;
+    width: 11px;
+    height: 11px;
+    border-radius: 3px;
     flex-shrink: 0;
     border: 1px solid rgba(255,255,255,0.15);
+}
+
+.brush-class-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 /* ── Radius Slider ──────────────────────────────────────── */
@@ -410,8 +440,8 @@ style.textContent += `
 }
 
 .brush-vis-checkbox {
-    width: 16px;
-    height: 16px;
+    width: 13px;
+    height: 13px;
     cursor: pointer;
     accent-color: #6f6bff;
     flex-shrink: 0;
@@ -958,6 +988,7 @@ const DEFAULT_CLASSIFICATIONS = [
     { value: 9,  name: "Water",             color: "#1d0fff" },
     { value: 12, name: "Overlap",           color: "#fefe00" },
     { value: 17, name: "Bridge Deck",       color: "#629fce" },
+    { value: 18, name: "High Point (Noise)",color: "#f09bf3" },
 ];
 
 let CLASSIFICATIONS = DEFAULT_CLASSIFICATIONS.map(c => ({ ...c }));
@@ -1220,7 +1251,9 @@ function rebuildClassificationGridUI() {
         btn.appendChild(swatch);
 
         const label = document.createElement("span");
+        label.className = "brush-class-label";
         label.textContent = cls.name;
+        label.title = cls.name;
         btn.appendChild(label);
 
         btn.appendChild(visChk);
@@ -3887,7 +3920,9 @@ function openBrushPanel() {
         btn.appendChild(swatch);
 
         const label = document.createElement("span");
+        label.className = "brush-class-label";
         label.textContent = cls.name;
+        label.title = cls.name;
         btn.appendChild(label);
 
         btn.appendChild(visChk);

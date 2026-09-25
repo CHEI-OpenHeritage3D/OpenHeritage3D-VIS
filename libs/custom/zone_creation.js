@@ -57,6 +57,12 @@ class orientedImagesHandler {
             // not in the scene. Apply the current state so a hidden set is
             // neither drawn nor pickable.
             setZoneOrientedImagesVisibility(images, !this._hidden);
+            // The zone search panel may already have been (re)built before this
+            // load finished — e.g. right after saving the zone form, which
+            // rebuilds the panel synchronously — and it only lists sets whose
+            // images are already loaded. Refresh it so the new set shows up
+            // without the user having to close/reopen the panel manually.
+            if (typeof _refreshZoneSearchPanel === "function") _refreshZoneSearchPanel();
 	    });
     }
 }

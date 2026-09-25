@@ -59765,6 +59765,8 @@ void main() {
 			8:       { visible: true, name: 'key-point'         , color: [1.0,  0.0,  0.0,  1.0] },
 			9:       { visible: true, name: 'water'             , color: [0.0,  0.0,  1.0,  1.0] },
 			12:      { visible: true, name: 'overlap'           , color: [1.0,  1.0,  0.0,  1.0] },
+			17: 	 { visible: true, name: 'Bridge Deck',        color: [0.38, 0.62, 0.80, 1.0] },
+			18: 	 { visible: true, name: 'High Point (Noise)', color: [0.94, 0.60, 0.95, 1.0] },
 			DEFAULT: { visible: true, name: 'default'           , color: [0.3,  0.6,  0.6,  0.5] },
 		}
 	};
@@ -60157,13 +60159,13 @@ void main() {
 				let color;
 				let visible = true;
 
-				if (classification[i]) {
+				if (classification[i] && classification[i].color) {
 					color = classification[i].color;
 					visible = classification[i].visible;
-				} else if (classification[i % 32]) {
+				} else if (classification[i % 32] && classification[i % 32].color) {
 					color = classification[i % 32].color;
 					visible = classification[i % 32].visible;
-				} else if(classification.DEFAULT) {
+				} else if(classification.DEFAULT && classification.DEFAULT.color) {
 					color = classification.DEFAULT.color;
 					visible = classification.DEFAULT.visible;
 				}else {
@@ -78220,6 +78222,7 @@ ENDSEC
 			this.width = 0;
 			this.height = 0;
 			this.fov = 1.0;
+			this.calibration = null;
 
 			const material = createMaterial();
 			const lineMaterial = new LineBasicMaterial( {
@@ -78309,16 +78312,26 @@ ENDSEC
 
 	class OrientedImageLoader{
 
-		static async loadCameraParams(path){
-			const res = await fetch(path);
-			const text = await res.text();
+		// changed 9/24/2026: per-image calibrations.
+		// A cameraParams XML may hold several <calibration> blocks (e.g. under a
+		// <calibrations> root), listed in the same order as the image rows of the
+		// imageParams file. A file with a single <calibration> (the classic
+		// camera.xml) is applied to every image, exactly as before.
+		// Each block needs <width>, <height> and <f> in pixels; an id attribute and
+		// <cx>, <cy>, <k1>.. are optional and only stored on the calibration.
+		static parseCalibration(node, path, index){
+			const read = (tag, parse) => {
+				const el = node.getElementsByTagName(tag)[0];
+				return el ? parse(el.textContent) : undefined;
+			};
 
-			const parser = new DOMParser();
-			const doc = parser.parseFromString(text, "application/xml");
+			const width = read("width", parseInt);
+			const height = read("height", parseInt);
+			const f = read("f", parseFloat);
 
-			const width = parseInt(doc.getElementsByTagName("width")[0].textContent);
-			const height = parseInt(doc.getElementsByTagName("height")[0].textContent);
-			const f = parseFloat(doc.getElementsByTagName("f")[0].textContent);
+			if(!(width > 0) || !(height > 0) || !(f > 0)){
+				throw new Error(`${path}: calibration ${index} needs positive <width>, <height> and <f>`);
+			}
 
 			let a = (height / 2)  / f;
 			let fov = 2 * MathUtils.radToDeg(Math.atan(a));
@@ -78330,6 +78343,45 @@ ENDSEC
 				f: f,
 				fov: fov,
 			};
+
+			const id = node.getAttribute ? node.getAttribute("id") : null;
+			if(id){
+				params.id = id;
+			}
+
+			for(const tag of ["cx", "cy", "k1", "k2", "k3", "k4", "p1", "p2", "t1", "t2"]){
+				const value = read(tag, parseFloat);
+				if(value !== undefined){
+					params[tag] = value;
+				}
+			}
+
+			return params;
+		}
+
+		static async loadCameraParams(path){
+			const res = await fetch(path);
+			const text = await res.text();
+
+			const parser = new DOMParser();
+			const doc = parser.parseFromString(text, "application/xml");
+
+			const parserError = doc.getElementsByTagName("parsererror")[0];
+			if(parserError){
+				throw new Error(`${path}: invalid XML: ${parserError.textContent}`);
+			}
+
+			let nodes = Array.from(doc.getElementsByTagName("calibration"));
+			if(nodes.length === 0){
+				// no <calibration> element: read width/height/f from the whole file, as before
+				nodes = [doc.documentElement];
+			}
+
+			const calibrations = nodes.map((node, index) => OrientedImageLoader.parseCalibration(node, path, index));
+
+			// The top-level fields stay those of the first calibration, so code that
+			// reads cameraParams.width/height/f/fov keeps working.
+			const params = Object.assign({}, calibrations[0], {calibrations: calibrations});
 
 			return params;
 		}
@@ -78346,6 +78398,12 @@ ENDSEC
 			const lines = content.split(/\r?\n/);
 			const imageParams = [];
 
+			// changed 9/24/2026: each image gets `row`, its position among the image
+			// rows of this file. Comment lines, blank lines and lines whose x is not a
+			// number (headers) are not image rows. Per-image calibrations are matched
+			// on `row`, so a malformed row that is skipped cannot shift later rows.
+			let row = 0;
+
 			for(let i = 1; i < lines.length; i++){
 				const line = lines[i];
 
@@ -78355,16 +78413,19 @@ ENDSEC
 
 				const tokens = line.includes(',') ? line.split(',') : line.split(/\s+/);	// changed by aviral 6/15/2026 to allow csv
 
-				if(tokens.length < 6){
-					continue;
-				}
-
-				if (tokens.length < 7) continue;
 				const x = Number.parseFloat(tokens[1]);
 				if (isNaN(x)) continue;
 
+				const imageRow = row++;
+
+				if (tokens.length < 7){
+					console.warn(`${path}: skipping image row ${imageRow} (line ${i + 1}): expected at least 7 columns`);
+					continue;
+				}
+
 				const params = {
 					id: tokens[0],
+					row: imageRow,
 					x: Number.parseFloat(tokens[1]),
 					y: Number.parseFloat(tokens[2]),
 					z: Number.parseFloat(tokens[3]),
@@ -78383,7 +78444,44 @@ ENDSEC
 			// debug
 			//return [imageParams[50]];
 
+			imageParams.rowCount = row;
+
 			return imageParams;
+		}
+
+		// changed 9/24/2026: choose the calibration of every loaded image.
+		//  - 1 calibration                  -> applied to all images (classic camera.xml)
+		//  - one calibration per image row  -> calibration k belongs to image row k
+		//  - any other count                -> console.error, first calibration for all
+		// Calibrations that carry an id are checked against their image's id.
+		static assignCalibrations(cameraParams, imageParams, cameraParamsPath, imageParamsPath){
+			const calibrations = cameraParams.calibrations || [cameraParams];
+			const rowCount = imageParams.rowCount !== undefined ? imageParams.rowCount : imageParams.length;
+
+			if(calibrations.length === 1){
+				return imageParams.map(() => calibrations[0]);
+			}
+
+			if(calibrations.length !== rowCount){
+				console.error(`${cameraParamsPath}: ${calibrations.length} calibrations for ${rowCount} image rows in ${imageParamsPath}; using the first calibration for all images`);
+				return imageParams.map(() => calibrations[0]);
+			}
+
+			const mismatches = [];
+			const assigned = imageParams.map((params, index) => {
+				const row = params.row !== undefined ? params.row : index;
+				const calibration = calibrations[row];
+				if(calibration.id !== undefined && String(calibration.id).trim() !== String(params.id).trim()){
+					mismatches.push(`row ${row}: image "${params.id}", calibration "${calibration.id}"`);
+				}
+				return calibration;
+			});
+
+			if(mismatches.length > 0){
+				console.warn(`${cameraParamsPath}: ${mismatches.length} calibration id(s) differ from their image row in ${imageParamsPath}, check the order:\n` + mismatches.slice(0, 10).join("\n"));
+			}
+
+			return assigned;
 		}
 
 		static async load(cameraParamsPath, imageParamsPath, viewer){
@@ -78412,12 +78510,15 @@ ENDSEC
 			// 	new THREE.Vector3(-0.5, -0.5, 0),
 			// );
 
-			const {width, height} = cameraParams;
+			// changed 9/24/2026: one calibration per image (see assignCalibrations)
+			const calibrations = OrientedImageLoader.assignCalibrations(cameraParams, imageParams, cameraParamsPath, imageParamsPath);
 			const orientedImages = [];
 			const sceneNode = new Object3D();
 			sceneNode.name = "oriented_images";
 
-			for(const params of imageParams){
+			for(const [index, params] of imageParams.entries()){
+
+				const calibration = calibrations[index];
 
 				// const material = createMaterial();
 				// const lm = new THREE.LineBasicMaterial( { color: 0x00ff00 } );
@@ -78452,8 +78553,9 @@ ENDSEC
 				// orientedImage.setDimension(width, height);
 				let position = [x, y, z];
 				let rotation = [omega, phi, kappa];
-				let dimension = [width, height];
-				orientedImage.set(position, rotation, dimension, cameraParams.fov);
+				let dimension = [calibration.width, calibration.height];
+				orientedImage.set(position, rotation, dimension, calibration.fov);
+				orientedImage.calibration = calibration;
 
 				sceneNode.add(orientedImage.mesh);
 				sceneNode.add(orientedImage.line);
@@ -78513,8 +78615,8 @@ ENDSEC
 				
 				if(shouldAddClipVolume || selectionChanged){
 					const img = hoveredElement;
-					const fov = cameraParams.fov;
-					const aspect  = cameraParams.width / cameraParams.height;
+					const fov = img.fov;	// changed 9/24/2026: per-image calibration
+					const aspect  = img.width / img.height;
 					const near = 1.0;
 					const far = 1000 * 1000;
 					const camera = new PerspectiveCamera(fov, aspect, near, far);
@@ -78675,6 +78777,7 @@ ENDSEC
 			images.cameraParamsPath = cameraParamsPath;
 			images.imageParamsPath = imageParamsPath;
 			images.cameraParams = cameraParams;
+			images.calibrations = calibrations;
 			images.imageParams = imageParams;
 			images.images = orientedImages;
 			images.controls = orientedImageControls;
@@ -89676,7 +89779,8 @@ ENDSEC
 
 		setClassificationVisibility (key, value) {
 			if (!this.classifications[key]) {
-				this.classifications[key] = {visible: value, name: 'no name'};
+				const fallbackColor = (this.classifications.DEFAULT && this.classifications.DEFAULT.color) || [1, 1, 1, 1];
+				this.classifications[key] = {visible: value, name: 'no name', color: fallbackColor};
 				this.dispatchEvent({'type': 'classification_visibility_changed', 'viewer': this});
 			} else if (this.classifications[key].visible !== value) {
 				this.classifications[key].visible = value;
