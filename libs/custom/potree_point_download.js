@@ -456,73 +456,95 @@ async function openLicenseForm() {
 }
 
 
-function updateDensityHint(depth) {
-        const hint = document.getElementById("dl-density-hint");
-        if (!hint) return;
+/**
+ * Level-of-detail hint under the depth slider.
+ *
+ * This deliberately reports no point count. A count can't be derived here:
+ * the octree metadata gives a total for the whole cloud only, and per-node
+ * counts exist solely for the hierarchy pages the browser has already
+ * fetched — at load time that's levels 0..hierarchy.stepSize (4 for our
+ * datasets, out of a depth of 12-14). The point totals for the deeper
+ * levels an export actually walks, and for the parts of the cloud inside a
+ * selection volume, are unknown until the export loads them. The status
+ * line reports the real running count while tiles are written.
+ *
+ * What the metadata does state exactly is the spacing each level samples
+ * at: level L has spacing = rootSpacing / 2^L, which is how Potree builds
+ * the octree in the first place. That is what the slider actually controls,
+ * so that is what we show.
+ */
+function updateDepthHint(depth) {
+    const hint = document.getElementById("dl-depth-hint");
+    if (!hint) return;
 
-        const visiblePCs = viewer.scene.pointclouds.filter(p => p.visible);
-        if (visiblePCs.length === 0) {
-            hint.textContent = "No visible point clouds.";
-            return;
-        }
-
-        // Use selected volumes if present, otherwise fall back to full PC bounds
-        const volumes = viewer.scene.volumes.filter(v => v instanceof Potree.BoxVolume);
-        let totalEstPoints = 0;
-        let avgDensity = 0;
-
-        if (volumes.length > 0) {
-            for (const vol of volumes) {
-                for (const pc of visiblePCs) {
-                    totalEstPoints += estimatePointsInVolume(pc, vol, depth);
-                    avgDensity     += estimatePointDensity(pc, depth);
-                }
-            }
-            avgDensity /= (volumes.length * visiblePCs.length);
-        } else {
-            for (const pc of visiblePCs) {
-                // Approximate using the full PC bounding box as a stand-in volume
-                const bb   = pc.boundingBox;
-                const size = bb.getSize(new THREE.Vector3());
-                const fakeVol = { scale: size };
-                totalEstPoints += estimatePointsInVolume(pc, fakeVol, depth);
-                avgDensity     += estimatePointDensity(pc, depth);
-            }
-            avgDensity /= visiblePCs.length;
-        }
-
-// Format density readably
-        let densityStr;
-        if (avgDensity >= 1e6)       densityStr = (avgDensity / 1e6).toFixed(1)  + "M pts/m³";
-        else if (avgDensity >= 1e3)  densityStr = (avgDensity / 1e3).toFixed(1)  + "K pts/m³";
-        else if (avgDensity >= 1)    densityStr = avgDensity.toFixed(1)           + " pts/m³";
-        else if (avgDensity >= 0.01) densityStr = avgDensity.toFixed(3)           + " pts/m³";
-        else if (avgDensity >= 1e-6) densityStr = (avgDensity * 1e6).toFixed(1)  + " pts/km³";
-        else                         densityStr = avgDensity.toExponential(2)     + " pts/m³";
-        
-        let pointsStr;
-        if (totalEstPoints >= 1e9)      pointsStr = (totalEstPoints / 1e9).toFixed(2) + "B";
-        else if (totalEstPoints >= 1e6) pointsStr = (totalEstPoints / 1e6).toFixed(2) + "M";
-        else if (totalEstPoints >= 1e3) pointsStr = (totalEstPoints / 1e3).toFixed(1) + "K";
-        else                            pointsStr = Math.round(totalEstPoints).toString();
-
-        const scope = volumes.length > 0
-            ? `${volumes.length} volume${volumes.length > 1 ? "s" : ""}`
-            : "full scene";
-
-        hint.innerHTML =
-            `~<strong style="color:#c4c0ff">${pointsStr} pts</strong> in ${scope} &nbsp;·&nbsp; ` +
-            `<span style="color:#888">${densityStr}</span><br>` +
-            `<span style="color:#666; font-size:10px;">Lower depth = faster, fewer points. These are estimates.</span>`;
+    const d = parseInt(depth, 10);
+    const visiblePCs = viewer.scene.pointclouds.filter(p => p.visible);
+    if (visiblePCs.length === 0) {
+        hint.textContent = "No visible point clouds.";
+        return;
     }
 
-    const slider      = document.getElementById("dl-depth-slider");
-    if (slider && valEl) {
-        slider.addEventListener("input", () => {
-            valEl.textContent = slider.value;
-            updateDensityHint(parseInt(slider.value));
-        });
+    // Spacing at the chosen level, per cloud, in world units. Each cloud has
+    // its own root spacing and its own depth, so a shared slider value can
+    // mean different things in different clouds — show the range if so.
+    let minSpacing = Infinity, maxSpacing = -Infinity;
+    let coarsest = 1;          // largest 2^(cloudDepth - d) across clouds
+    let anyClamped = false;    // slider is at/past some cloud's own depth
+
+    for (const pc of visiblePCs) {
+        pc.updateMatrixWorld(true);
+        const worldScale = new THREE.Vector3().setFromMatrixScale(pc.matrixWorld);
+        const unit = Math.max(worldScale.x, worldScale.y, worldScale.z) || 1;
+
+        const rootSpacing = pc.pcoGeometry?.spacing;
+        if (!Number.isFinite(rootSpacing) || rootSpacing <= 0) continue;
+
+        const cloudDepth = getMaxDepth(pc);
+        const level = cloudDepth != null ? Math.min(d, cloudDepth) : d;
+        if (cloudDepth != null && d >= cloudDepth) anyClamped = true;
+
+        const spacing = (rootSpacing * unit) / Math.pow(2, level);
+        minSpacing = Math.min(minSpacing, spacing);
+        maxSpacing = Math.max(maxSpacing, spacing);
+
+        if (cloudDepth != null) {
+            coarsest = Math.max(coarsest, Math.pow(2, Math.max(0, cloudDepth - d)));
+        }
     }
+
+    if (!Number.isFinite(minSpacing)) {
+        hint.textContent = "Level of detail " + d + ".";
+        return;
+    }
+
+    const spacingStr = (fmtSpacing(minSpacing) === fmtSpacing(maxSpacing))
+        ? fmtSpacing(minSpacing)
+        : `${fmtSpacing(minSpacing)}–${fmtSpacing(maxSpacing)}`;
+
+    const detail = anyClamped && coarsest === 1
+        ? "full detail"
+        : `${coarsest}× coarser than full detail`;
+
+    const volumes = viewer.scene.volumes.filter(v => v instanceof Potree.BoxVolume);
+    const scope = volumes.length > 0
+        ? `${volumes.length} volume${volumes.length > 1 ? "s" : ""} selected`
+        : "no volume selected — whole scene";
+
+    hint.innerHTML =
+        `Samples at <strong style="color:#c4c0ff">${spacingStr}</strong> point spacing ` +
+        `&nbsp;·&nbsp; <span style="color:#888">${detail}</span><br>` +
+        `<span style="color:#666; font-size:10px;">${scope}. ` +
+        `Point count is only known once the export runs.</span>`;
+}
+
+// Distance in world units (metres for our datasets), ~3 significant digits.
+function fmtSpacing(m) {
+    if (!Number.isFinite(m) || m <= 0) return "?";
+    if (m < 0.001) return (m * 1000).toFixed(2) + " mm";
+    if (m < 0.01)  return (m * 1000).toFixed(1) + " mm";
+    if (m < 1)     return (m * 100).toFixed(1)  + " cm";
+    return m.toFixed(2) + " m";
+}
 
 /* =====================================================================
    UI INITIALIZATION
@@ -549,7 +571,7 @@ function initializeDownloadUI() {
                 </div>
                 <input id="dl-depth-slider" class="dl-slider" type="range"
                     min="1" max="${sceneMaxDepth}" value="${sceneMaxDepth}" step="1">
-                <div id="dl-density-hint" class="dl-slider-hint" style="margin-top:8px; line-height:1.6;"></div>
+                <div id="dl-depth-hint" class="dl-slider-hint" style="margin-top:8px; line-height:1.6;"></div>
             </div>
 
             <div class="dl-progress-wrap">
@@ -571,7 +593,7 @@ function initializeDownloadUI() {
     if (volumeBtn) volumeBtn.addEventListener("click", () => {
         viewer.setClipTask(1);
         viewer.volumeTool.startInsertion({ clip: true });
-        updateDensityHint(slider.value);
+        if (slider) updateDepthHint(slider.value);
     });
 
     if (selectedBtn) selectedBtn.addEventListener("click",
@@ -586,9 +608,12 @@ function initializeDownloadUI() {
     });
 
     if (slider && valEl) slider.addEventListener("input", () => {
-        updateDensityHint(slider.value);
+        updateDepthHint(slider.value);
         valEl.textContent = slider.value;
     });
+
+    // Fill the hint immediately; otherwise it stays blank until the slider moves.
+    if (slider) updateDepthHint(slider.value);
 }
 
 /* =====================================================================
@@ -738,42 +763,6 @@ function pickTileGrid(box, estimatedPoints, targetPointsPerTile) {
     return { tilesX, tilesY, tilesZ: 1 };
 }
 
-function getEstimatedTotalPoints(selectionBox) {
-    let estimatedPoints = 0;
-
-    for (const pc of viewer.scene.pointclouds) {
-        if (!pc.visible) continue;
-
-        // pc.boundingBox is in local space — bring it into world space
-        // to match selectionBox.
-        const pcBoxWorld = pc.boundingBox.clone().applyMatrix4(pc.matrixWorld);
-
-        // Intersection AABB
-        const ix = Math.max(0, Math.min(selectionBox.max.x, pcBoxWorld.max.x)
-                             - Math.max(selectionBox.min.x, pcBoxWorld.min.x));
-        const iy = Math.max(0, Math.min(selectionBox.max.y, pcBoxWorld.max.y)
-                             - Math.max(selectionBox.min.y, pcBoxWorld.min.y));
-        const iz = Math.max(0, Math.min(selectionBox.max.z, pcBoxWorld.max.z)
-                             - Math.max(selectionBox.min.z, pcBoxWorld.min.z));
-        const intersectionVolume = ix * iy * iz;
-        if (intersectionVolume === 0) continue;
-
-        const pcSize   = pcBoxWorld.getSize(new THREE.Vector3());
-        const pcVolume = pcSize.x * pcSize.y * pcSize.z;
-        if (pcVolume === 0) continue;
-
-        // Total point count from the octree metadata, not what's
-        // currently loaded into the GPU.
-        const totalPoints = pc.pcoGeometry.points
-                         ?? pc.pcoGeometry.metadata?.points
-                         ?? 0;
-
-        const volumeRatio = intersectionVolume / pcVolume;
-        estimatedPoints += volumeRatio * totalPoints;
-    }
-    return estimatedPoints;
-}
-
 // Deepest level present in the hierarchy as currently known. For COPC that
 // grows as hierarchy pages load, so it is a lower bound, not the file's depth.
 function deepestKnownLevel(root) {
@@ -794,7 +783,7 @@ function getMaxDepth(pc) {
     const v2 = pc.pcoGeometry?.loader?.metadata?.hierarchy?.depth;
     if (v2 != null) return v2;
     // COPC has no depth field. Use what the hierarchy shows so the LOD slider and
-    // the density estimate stay meaningful; effectiveMaxDepth() below keeps that
+    // its spacing hint stay meaningful; effectiveMaxDepth() below keeps that
     // lower bound from truncating an export.
     if (pc.pcoGeometry?.type === "copc") return deepestKnownLevel(pc.pcoGeometry.root);
     return null;
@@ -1126,17 +1115,6 @@ async function writeManifest(dirHandle, namePrefix, fullBox, grid, tiles, maxDep
     };
     const buffer = new TextEncoder().encode(JSON.stringify(manifest, null, 2));
     await writeToDirectory(dirHandle, `${namePrefix}_manifest.json`, buffer);
-}
-
-function estimatePointDensity(pointcloud, depth) {
-    const spacingAtDepth = pointcloud.pcoGeometry.spacing / Math.pow(2, depth);
-    return 1 / Math.pow(spacingAtDepth, 3); // points per m³
-}
-
-function estimatePointsInVolume(pointcloud, volume, depth) {
-    const density = estimatePointDensity(pointcloud, depth);
-    const size = volume.scale; // BoxVolume scale = full extents
-    return density * size.x * size.y * size.z;
 }
 
 /* =====================================================================

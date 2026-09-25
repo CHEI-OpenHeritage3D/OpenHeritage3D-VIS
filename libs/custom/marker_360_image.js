@@ -10,8 +10,6 @@ let pre360View = null;                          // { pos: Vector3, target: Vecto
 let reopenBlockUntil = 0;
 window.viewer360 = viewer360;
 
-let sphereMarker1 = null;
-
 // ══════════════════════════════════════════════════════════════
 //  Panel styling
 //
@@ -893,9 +891,14 @@ function _open360(sphereMarker) {
     window.viewing360Marker = marker360;
     document.dispatchEvent(new CustomEvent("viewing-360-changed"));
 
-    if(sphereMarker1 && !sphereMarker1.visible && !window.imageMarkersGloballyHidden) sphereMarker1.visible = true;
-
-    sphereMarker1 = sphereMarker;
+    // First entry only: hide every oriented-image set and every 360 marker
+    // (including this one) for the duration of immersion. navigate360()
+    // re-enters with in360View already true, so subsequent switches leave
+    // this alone — everything is already hidden. Restored in full by
+    // restoreImageMarkerVisibility() in close360().
+    if (!window.in360View && typeof window.hideOtherImageMarkersForImmersion === "function") {
+        window.hideOtherImageMarkersForImmersion(null);
+    }
 
     sphereMarker.visible = false;
 
@@ -1087,13 +1090,11 @@ function close360() {
     window.viewing360Marker = null;
     document.dispatchEvent(new CustomEvent("viewing-360-changed"));
 
-    // Re-show the sphere hidden on open — unless the global image-marker
-    // toggle went off in the meantime (a 360 can be opened from the zone
-    // search list even while markers are masked).
-    const mk360 = sphereMarker1 && sphereMarker1.userData && sphereMarker1.userData.marker360;
-    sphereMarker1.visible = !window.imageMarkersGloballyHidden;
-    if (window.imageMarkersGloballyHidden && mk360 && mk360._hitMesh) {
-        mk360._hitMesh.raycast = () => {};
+    // Bring every image set and 360 marker back to whatever visibility their
+    // own zone/set state (and the global toggle) says they should have right
+    // now — undoes the hideOtherImageMarkersForImmersion() call in _open360().
+    if (typeof window.restoreImageMarkerVisibility === "function") {
+        window.restoreImageMarkerVisibility();
     }
 
     // Restore Potree camera

@@ -76,6 +76,15 @@ style.textContent += `
     align-items: center;
     gap: 10px;
     margin-bottom: 6px;
+    min-width: 0;
+}
+
+/* Holds the title + subtitle. min-width:0 lets it shrink below its content's
+   natural width so the wrapping below can actually take effect — a flex item
+   defaults to min-width:auto and would otherwise push the card wider than its
+   max-width, where .marker360-hover-card-inner's overflow:hidden clips it. */
+.marker360-hover-text {
+    min-width: 0;
 }
 
 .marker360-hover-title {
@@ -85,14 +94,19 @@ style.textContent += `
     letter-spacing: 0.02em;
     line-height: 1.3;
     text-shadow: 0 0 12px rgba(60, 200, 160, 0.3);
+    overflow-wrap: anywhere;
 }
 
+/* Zone names run long and often carry no spaces to break at, so allow a break
+   mid-token rather than losing the tail of the name. */
 .marker360-hover-subtitle {
     font-size: 12px;
     color: rgba(180, 220, 210, 0.7);
     letter-spacing: 0.03em;
     text-transform: uppercase;
     font-weight: 500;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
 }
 
 .marker360-hover-divider {
@@ -430,13 +444,13 @@ function showMarker360HoverCard(markerGroup, event) {
         <div class="marker360-hover-card-inner">
             <div class="marker360-hover-header">
                 <div class="marker360-hover-dot"></div>
-                <div>
+                <div class="marker360-hover-text">
                     <div class="marker360-hover-title">${marker360?.name || "360° View"}</div>
                     <div class="marker360-hover-subtitle">${zone?.name || ""}</div>
                 </div>
             </div>
             <div class="marker360-hover-divider"></div>
-            <div class="marker360-hover-hint">Click to open 360° view</div>
+            <div class="marker360-hover-hint">Double-click to open 360° view</div>
         </div>
     `;
 
@@ -449,8 +463,11 @@ function showMarker360HoverCard(markerGroup, event) {
 
 function _positionMarker360Card(card, cx, cy) {
     const pad = 16;
-    const cardW = 260;
-    const cardH = 120;
+    // Measured, not assumed: a wrapped zone name makes the card taller than any
+    // fixed guess, which would flip it at the wrong distance from the edge.
+    const rect = card.getBoundingClientRect();
+    const cardW = rect.width || 260;
+    const cardH = rect.height || 120;
 
     let left = cx + pad;
     let top = cy + pad;
@@ -517,11 +534,26 @@ function restoreMarker360Appearance(group) {
     group.userData._mat2.color.set(0xa78bfa);
 }
 
-// Click
-window.addEventListener("pointerdown", () => {
-    if (currentHoveredMarker360) {
-        window.open360(currentHoveredMarker360);
-    }
+// Open on double-click, the same gesture that opens an oriented image
+// (potree.js binds dblclick on the canvas for those).
+//
+// Potree's own double-click handler runs first and starts a 600ms
+// zoom-to-cursor tween on scene.view.position; left alone it would fight the
+// camera move _open360() is about to make and leave the viewer standing off
+// the marker, visible through a part-transparent panorama.
+window.addEventListener("dblclick", () => {
+    if (!currentHoveredMarker360) return;
+
+    const controls = viewer.getControls();
+    if (controls && typeof controls.stopTweens === "function") controls.stopTweens();
+
+    // Drop the hover card before opening. The panorama covers the canvas, so
+    // the pointermove that would otherwise clear it may never arrive — leaving
+    // the card stranded on top of the viewer. Unhovering clears
+    // currentHoveredMarker360, so read the marker out first.
+    const marker = currentHoveredMarker360;
+    onMarker360Unhover();
+    window.open360(marker);
 });
 
 // ══════════════════════════════════════════════════════════════

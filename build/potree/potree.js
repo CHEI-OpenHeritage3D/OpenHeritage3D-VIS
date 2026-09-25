@@ -78565,9 +78565,13 @@ ENDSEC
 
 			let hoveredElement = null;
 			let clipVolume = null;
+			// True while a photo is being flown to. capture() only happens when the
+			// fly-in lands, so without this the hover keeps firing all the way in and
+			// the hover card pops back up over the photo we are entering.
+			let entering = false;
 
 			const onMouseMove = (evt) => {
-				if(orientedImageControls.hasSomethingCaptured()) return;   // ← add this line
+				if(entering || orientedImageControls.hasSomethingCaptured()) return;   // ← add this line
 				// if(viewer.clipTask != 0) viewer.setClipTask(0);
 				const tStart = performance.now();
 				if(hoveredElement){
@@ -78593,14 +78597,32 @@ ENDSEC
 				const intersects = raycaster.intersectObjects( objects );
 				let selectionChanged = false;
 
-				if ( intersects.length > 0){
+				// A quad standing behind a wall — or behind a nearer photo — must not
+				// answer to the cursor. isHitOccluded() in libs/custom/layer_map.js owns
+				// that test; the 360 markers pick through the same one.
+				const occluded = intersects.length > 0
+					&& typeof window.isHitOccluded === "function"
+					&& window.isHitOccluded(intersects[0], raycaster, evt);
+
+				if ( intersects.length > 0 && !occluded){
 					//console.log(intersects);
 					const intersection = intersects[0];
 					const orientedImage = intersection.object.orientedImage;
-					orientedImage.line.material.color.setRGB(0.77, 0.75, 1.0);    // was (1, 0, 0) — bright lavender on hover 
+					orientedImage.line.material.color.setRGB(0.77, 0.75, 1.0);    // was (1, 0, 0) — bright lavender on hover
 					selectionChanged = hoveredElement !== orientedImage;
 					hoveredElement = orientedImage;
+					// Dispatched every move so the hover card can track the cursor,
+					// the way the 360 markers' card does (libs/custom/marker_360.js).
+					viewer.dispatchEvent({
+						type: "oriented_image_hover",
+						image: orientedImage,
+						collection: images,
+						event: evt,
+					});
 				}else {
+					if(hoveredElement !== null){
+						viewer.dispatchEvent({type: "oriented_image_unhover", image: hoveredElement});
+					}
 					hoveredElement = null;
 				}
 
@@ -78703,14 +78725,18 @@ ENDSEC
 				const newCamPos = image.position.clone();
 				const newCamTarget = image.mesh.position.clone();
 
+				entering = true;
+
 				if(orientedImageControls.hasSomethingCaptured()){
 					// already locked: briefly unlock, fly across, then re-lock
 					orientedImageControls.locked = false;
 					viewer.scene.view.setView(newCamPos, newCamTarget, 300, () => {
+						entering = false;
 						orientedImageControls.relock(image);
 					});
 				}else{
 					viewer.scene.view.setView(newCamPos, newCamTarget, 500, () => {
+						entering = false;
 						orientedImageControls.capture(image);
 					});
 				}

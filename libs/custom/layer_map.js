@@ -619,6 +619,56 @@ function checkRayIntersections(mousePointer, camera, raycaster, scene, getFirstV
   return intersections;
 }
 
+// Is something solid standing in front of this hit?
+//
+// checkRayIntersections() only reaches ordinary meshes parented under
+// viewer.scene.scene, which misses the two things most likely to be in the
+// way: the point cloud (picked through Potree's own GPU pass, it is not a
+// raycastable mesh) and the oriented images (oriented_image_panel.js
+// re-parents those into its post-composite overlay scene). A marker's hit
+// sphere is depthTest:false as well, so without this nothing stops a marker
+// behind a wall — or behind a photo — from answering to the cursor.
+function isHitOccluded(intersection, raycaster, event) {
+    const camera = viewer.scene.getActiveCamera();
+    const ray = raycaster.ray;
+
+    // Measure along the ray rather than from the camera: under an orthographic
+    // camera ray.origin sits on the near plane, not at camera.position.
+    const depthAlongRay = (p) => p.clone().sub(ray.origin).dot(ray.direction);
+
+    const canvas = viewer.renderer.domElement;
+    const rect = canvas.getBoundingClientRect();
+    const pickParams = {
+        x: event.clientX - rect.left,
+        y: canvas.clientHeight - (event.clientY - rect.top),
+        // Potree defaults to a 65px window and reports the nearest point
+        // anywhere inside it, which would call a marker standing in open space
+        // occluded by whatever surface happens to pass within half a window of
+        // the cursor. Only what is actually under the cursor counts here.
+        pickWindowSize: 3,
+    };
+
+    for (const pointcloud of viewer.scene.pointclouds || []) {
+        if (!pointcloud.visible) continue;
+        const point = pointcloud.pick(viewer, camera, ray, pickParams);
+        if (point && point.position && depthAlongRay(point.position) < intersection.distance) {
+            return true;
+        }
+    }
+
+    const imageMeshes = [];
+    for (const collection of viewer.scene.orientedImages || []) {
+        for (const image of collection.images || []) {
+            if (image.mesh) imageMeshes.push(image.mesh);
+        }
+    }
+    // intersectObjects() filters on each mesh's layer mask, which is how
+    // zone_creation.js takes a hidden image set back out of picking.
+    return imageMeshes.length > 0 &&
+        raycaster.intersectObjects(imageMeshes, false)
+            .some(hit => hit.distance < intersection.distance);
+}
+
 function onPointerMove(event) {
 
     const mousePointer = getMouseVector2(event);
@@ -638,7 +688,11 @@ function onPointerMove(event) {
                 triggerLayerMode(intersections.object);
                 break;
             case "marker360":
-                onMarker360Hover(intersections.object, event);
+                if (isHitOccluded(intersections, raycaster, event)) {
+                    onMarker360Unhover();
+                } else {
+                    onMarker360Hover(intersections.object, event);
+                }
                 break;
             case "beacon":
                 onBeaconHover(intersections.object, event);

@@ -280,6 +280,128 @@
     text-transform: none;
     flex-shrink: 0;
 }
+
+/* ── ORIENTED IMAGE HOVER CARD ───────────────────────────── */
+/* Deliberately the same card as .marker360-hover-card in marker_360.js, in
+   this panel's indigo instead of the markers' blue, so hovering a photo and
+   hovering a 360 marker read as one gesture. */
+
+#oiHoverCard {
+    position: fixed;
+    pointer-events: none;
+    z-index: 9999;
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    max-width: 260px;
+}
+
+#oiHoverCard.visible {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+}
+
+.oi-hover-card-inner {
+    background: rgba(12, 12, 18, 0.88);
+    backdrop-filter: blur(20px) saturate(150%);
+    -webkit-backdrop-filter: blur(20px) saturate(150%);
+    border: 1px solid rgba(140, 130, 255, 0.18);
+    border-radius: 12px;
+    padding: 14px 18px;
+    box-shadow:
+        0 0 24px rgba(110, 107, 255, 0.12),
+        0 8px 32px rgba(0, 0, 0, 0.5),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    position: relative;
+    overflow: hidden;
+}
+
+.oi-hover-card-inner::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg,
+        transparent 0%,
+        rgba(110, 107, 255, 0.6) 30%,
+        rgba(165, 160, 255, 0.8) 50%,
+        rgba(110, 107, 255, 0.6) 70%,
+        transparent 100%
+    );
+    animation: oi-shimmer 2.5s ease-in-out infinite;
+}
+
+@keyframes oi-shimmer {
+    0%, 100% { opacity: 0.4; transform: translateX(-30%); }
+    50% { opacity: 1; transform: translateX(30%); }
+}
+
+.oi-hover-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+    min-width: 0;
+}
+
+/* Holds the title + subtitle. min-width:0 lets it shrink below its content's
+   natural width so the wrapping below can actually take effect — a flex item
+   defaults to min-width:auto and would otherwise push the card wider than its
+   max-width, where .oi-hover-card-inner's overflow:hidden clips it. */
+.oi-hover-text {
+    min-width: 0;
+}
+
+.oi-hover-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #6e6bff;
+    box-shadow: 0 0 8px rgba(110, 107, 255, 0.8), 0 0 16px rgba(110, 107, 255, 0.4);
+    flex-shrink: 0;
+    animation: oi-dot-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes oi-dot-pulse {
+    0%, 100% { box-shadow: 0 0 6px rgba(110,107,255,0.6), 0 0 12px rgba(110,107,255,0.3); }
+    50% { box-shadow: 0 0 10px rgba(110,107,255,1), 0 0 24px rgba(110,107,255,0.5); }
+}
+
+.oi-hover-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: #f0f4ff;
+    font-family: monospace;
+    letter-spacing: 0.02em;
+    line-height: 1.3;
+    text-shadow: 0 0 12px rgba(110, 107, 255, 0.3);
+    overflow-wrap: anywhere;
+}
+
+/* Set and zone names run long and often carry no spaces to break at, so allow
+   a break mid-token rather than losing the tail of the name. */
+.oi-hover-subtitle {
+    font-size: 12px;
+    color: rgba(200, 200, 240, 0.7);
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    font-weight: 500;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+.oi-hover-divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(110, 107, 255, 0.25), transparent);
+    margin: 8px 0;
+}
+
+.oi-hover-hint {
+    margin-top: 6px;
+    font-size: 11px;
+    color: rgba(180, 180, 230, 0.45);
+    font-style: italic;
+}
 `;
     document.head.appendChild(oiStyle);
 
@@ -608,6 +730,104 @@
     function showPanel() { panel.classList.add("open"); }
     function hidePanel() { panel.classList.remove("open"); }
 
+    // ══════════════════════════════════════════════════════════════
+    //  Hover card
+    //
+    //  The counterpart of the 360 markers' card (marker_360.js): hover a
+    //  photo marker, get its name and a reminder of the gesture that opens
+    //  it. Fed by the oriented_image_hover / _unhover events potree.js
+    //  dispatches from its own hover raycast.
+    // ══════════════════════════════════════════════════════════════
+
+    let hoverCard = null, hoverCardTitle = null, hoverCardSubtitle = null;
+
+    function ensureHoverCard() {
+        if (hoverCard) return hoverCard;
+
+        hoverCard = document.createElement("div");
+        hoverCard.id = "oiHoverCard";
+        hoverCard.innerHTML = `
+            <div class="oi-hover-card-inner">
+                <div class="oi-hover-header">
+                    <div class="oi-hover-dot"></div>
+                    <div class="oi-hover-text">
+                        <div class="oi-hover-title"></div>
+                        <div class="oi-hover-subtitle"></div>
+                    </div>
+                </div>
+                <div class="oi-hover-divider"></div>
+                <div class="oi-hover-hint">Double-click to open image</div>
+            </div>
+        `;
+        document.body.appendChild(hoverCard);
+
+        // Filenames and set names are author-supplied data, so they go in as
+        // text, never as markup.
+        hoverCardTitle = hoverCard.querySelector(".oi-hover-title");
+        hoverCardSubtitle = hoverCard.querySelector(".oi-hover-subtitle");
+        return hoverCard;
+    }
+
+    function positionHoverCard(card, cx, cy) {
+        const pad = 16;
+        // Measured, not assumed: a wrapped name makes the card taller than any
+        // fixed guess, which would flip it at the wrong distance from the edge.
+        const rect = card.getBoundingClientRect();
+        const cardW = rect.width || 260;
+        const cardH = rect.height || 120;
+
+        let left = cx + pad;
+        let top = cy + pad;
+
+        if (left + cardW > window.innerWidth - pad) left = cx - cardW - pad;
+        if (top + cardH > window.innerHeight - pad) top = cy - cardH - pad;
+
+        card.style.left = `${Math.max(pad, left)}px`;
+        card.style.top = `${Math.max(pad, top)}px`;
+    }
+
+    // Which image set this photo belongs to, for the subtitle line.
+    function setNameOf(collection) {
+        if (typeof _zoneOrientedImageHandlers !== "function") return "";
+        for (const zone of window.zones || []) {
+            for (const handler of _zoneOrientedImageHandlers(zone)) {
+                if (handler.images === collection) return handler.name || zone.name || "";
+            }
+        }
+        return "";
+    }
+
+    // The brush's Shift tooltip (brush_selection.js) already names an image at
+    // the cursor; two cards stacked on the same spot would just collide.
+    function brushTooltipShowing() {
+        const tip = document.querySelector(".brush-oi-tooltip");
+        return !!tip && tip.style.display === "block";
+    }
+
+    function showHoverCard(image, collection, event) {
+        if (!image || brushTooltipShowing()) {
+            hideHoverCard();
+            return;
+        }
+
+        const card = ensureHoverCard();
+        const images = collection ? collection.images : null;
+        const index = images ? images.indexOf(image) : -1;
+
+        hoverCardTitle.textContent = image.id;
+        hoverCardSubtitle.textContent = [
+            setNameOf(collection),
+            index >= 0 ? `${index + 1} / ${images.length}` : "",
+        ].filter(Boolean).join(" · ");
+
+        if (event) positionHoverCard(card, event.clientX, event.clientY);
+        requestAnimationFrame(() => card.classList.add("visible"));
+    }
+
+    function hideHoverCard() {
+        if (hoverCard) hoverCard.classList.remove("visible");
+    }
+
     // Enter or update the panel for a focused image.
     function enterPanel(image, resetOpacity) {
         orientedImageState.currentImage = image;
@@ -625,10 +845,30 @@
     //  Viewer event wiring
     // ══════════════════════════════════════════════════════════════
 
+    viewer.addEventListener("oriented_image_hover", (e) => {
+        showHoverCard(e.image, e.collection, e.event);
+    });
+
+    viewer.addEventListener("oriented_image_unhover", () => hideHoverCard());
+
+    // Drop the card the moment the gesture lands. oriented_image_captured fires
+    // only after the 500ms fly-in, and potree.js keeps dispatching hover until
+    // then, so relying on that alone leaves the card sitting over the photo.
+    viewer.renderer.domElement.addEventListener("dblclick", () => hideHoverCard());
+
     viewer.addEventListener("oriented_image_captured", (e) => {
         orientedImageState.controls = e.controls;
         orientedImageState.collection = e.controls.orientedImagesInstance;
+        // potree.js stops its hover raycast while a photo is captured, so no
+        // unhover is coming — drop the card here or it stays on screen.
+        hideHoverCard();
         enterPanel(e.image, /* resetOpacity */ true);
+        // Hide every OTHER image set and every 360 marker for the duration —
+        // this set's own siblings are already handled by showOnly()/showAll()
+        // in potree.js. Restored in full on oriented_image_released below.
+        if (typeof hideOtherImageMarkersForImmersion === "function") {
+            hideOtherImageMarkersForImmersion(orientedImageState.collection);
+        }
         if(document.getElementById("brushPanel")) {
             setPCMaterial("classification");
             if (typeof enterClassBlendForOrientedImage === "function") enterClassBlendForOrientedImage();
@@ -655,6 +895,10 @@
         orientedImageState.currentImage = null;
         setPCMaterial("rgba classes");
         if (typeof exitClassBlendForOrientedImage === "function") exitClassBlendForOrientedImage();
+        // Bring every other image set and 360 marker back to whatever
+        // visibility their own zone/set state (and the global toggle) says
+        // they should have right now — undoes hideOtherImageMarkersForImmersion.
+        if (typeof restoreImageMarkerVisibility === "function") restoreImageMarkerVisibility();
         // Undo the global OI toggle only if Shift+click was the one that
         // flipped it on — leave a manually-enabled toggle alone.
         if (window.brushState && window.brushState._globalOIForcedByShiftClick) {

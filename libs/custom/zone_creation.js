@@ -2629,6 +2629,47 @@ function setAllOrientedImagesVisibility(visible) {
     refreshZoneCheckboxStates();
 }
 
+// ══════════════════════════════════════════════════════════════
+//  Immersive image view (oriented image / 360 photo)
+//
+//  While the user is standing inside a photo, every OTHER marker reads as
+//  clutter, so it is hidden for the duration. This is a raw visual mask —
+//  it never touches handler._hidden / zone._marker360sVisible / the global
+//  toggle — so on exit, recomputing visibility from that untouched tracked
+//  state (which already factors in the global toggle) puts back exactly
+//  what was visible before immersion started, nothing more.
+//
+//  exceptCollection lets the oriented-image set the just-focused photo
+//  belongs to opt out: its own sibling markers are already managed by
+//  showOnly()/showAll() in potree.js, so this only clears every OTHER set.
+// ══════════════════════════════════════════════════════════════
+
+function hideOtherImageMarkersForImmersion(exceptCollection) {
+    for (const z of window.zones || []) {
+        for (const h of _zoneOrientedImageHandlers(z)) {
+            if (h.images === exceptCollection) continue;
+            if (h.images) setZoneOrientedImagesVisibility(h.images, false);
+        }
+        if (z.marker360s && z.marker360s.length) {
+            _applyMarker360sVisibility(z, false);
+        }
+    }
+}
+
+function restoreImageMarkerVisibility() {
+    for (const z of window.zones || []) {
+        for (const h of _zoneOrientedImageHandlers(z)) {
+            if (h.images) setZoneOrientedImagesVisibility(h.images, !h._hidden);
+        }
+        if (z.marker360s && z.marker360s.length) {
+            _applyMarker360sVisibility(z, z._marker360sVisible !== false);
+        }
+    }
+}
+
+window.hideOtherImageMarkersForImmersion = hideOtherImageMarkersForImmersion;
+window.restoreImageMarkerVisibility = restoreImageMarkerVisibility;
+
 // Mirror the global flag onto the button's visual state.
 function _syncGlobalOIBubble() {
     const btn = document.getElementById("globalOIToggle");
