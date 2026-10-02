@@ -2317,18 +2317,263 @@ function isNodeFullyClipped(worldBox, clipInverses, showInside) {
     }
 }
 
+// ── Stroke profiler: counting the subtrees implicit nodes stand for ──
+// An "all" entry covers its node's whole subtree, which the stroke never visits and
+// whose hierarchy is often not expanded in memory yet. The profiler counts it from
+// the file instead: the in-memory part directly, each unexpanded part by fetching
+// its hierarchy chunk (2.0) or page (COPC). No point data is fetched and the live
+// octree is never expanded, so profiling can't change what the viewer or the edit
+// count sees. Hierarchy is immutable, so each chunk's subtree total is memoized.
+const _subtreeCountMemo = new WeakMap();   // pcoGeometry → Map(chunk offset → Promise<{nodes, points}>)
+
+function _countOnce(geom, offset, count) {
+    let memo = _subtreeCountMemo.get(geom);
+    if (!memo) { memo = new Map(); _subtreeCountMemo.set(geom, memo); }
+    const key = String(offset);
+    let p = memo.get(key);
+    if (!p) {
+        p = count();
+        memo.set(key, p);
+        p.catch(() => memo.delete(key));   // retry a failed fetch on the next stroke
+    }
+    return p;
+}
+
+// Caps per-chunk hierarchy requests in flight (COPC pages, and 2.0 files too big to
+// download whole), for the subtree counts and the full octree grid. A large subtree
+// can reach thousands of unexpanded proxies at once, and Chrome fails requests beyond
+// roughly 1,300 pending ("TypeError: Failed to fetch"). Uses the stroke's load
+// budget, which already assumes the host takes that many concurrent range requests.
+let _hierarchyInFlight = 0;
+const _hierarchyWaiting = [];
+
+async function _hierarchyFetch(request) {
+    while (_hierarchyInFlight >= BRUSH_MAX_NODES_LOADING) await new Promise(r => _hierarchyWaiting.push(r));
+    _hierarchyInFlight++;
+    try { return await request(); }
+    finally { _hierarchyInFlight--; _hierarchyWaiting.shift()?.(); }
+}
+
+// Retries a request that fails at the network level ("TypeError: Failed to fetch").
+// A full read can take thousands of requests, where one transient failure is likely
+// and would otherwise abandon the whole read.
+async function _withRetries(request, attempts = 4) {
+    for (let i = 1; ; i++) {
+        try { return await request(); }
+        catch (e) {
+            if (i >= attempts) throw e;
+            await new Promise(r => setTimeout(r, 250 * 2 ** (i - 1)));   // 250 ms, 0.5 s, 1 s
+        }
+    }
+}
+
+// hierarchy.bin's total size per 2.0 geometry, from HEAD or Content-Range. The file
+// is its chunks back to back, so this is what "all of the hierarchy read" adds up
+// to. Missing when a cross-origin server doesn't expose the size.
+const _hierarchyBytes = new WeakMap();
+
+// hierarchy.bin up to this size is downloaded once and sliced in memory, instead of
+// one range request per chunk. Chunks can be tiny and numerous (D69P40 packs 106,659
+// of them into 5.6 MB), and at a few hundred requests a second reading a whole cloud
+// that way takes minutes.
+const HIERARCHY_WHOLE_FILE_MAX = 64 * 1024 * 1024;
+const _hierarchyFiles = new WeakMap();   // 2.0 geometry → Promise<ArrayBuffer, or null to read by range>
+
+function _hierarchyFile(geom) {
+    let file = _hierarchyFiles.get(geom);
+    if (!file) {
+        const url = `${geom.loader.url}/../hierarchy.bin`;
+        file = (async () => {
+            // no-store: a HEAD answered from a partial cache entry can misreport the size
+            const head = await _withRetries(() => fetch(url, { method: "HEAD", cache: "no-store" }));
+            const size = Number(head.headers.get("Content-Length"));
+            if (size > 0) _hierarchyBytes.set(geom, size);
+            if (!(size > 0 && size <= HIERARCHY_WHOLE_FILE_MAX)) return null;
+            const res = await _withRetries(() => fetch(url));
+            if (!res.ok) throw new Error(`hierarchy.bin: HTTP ${res.status}`);
+            return await res.arrayBuffer();
+        })().catch(() => {
+            _hierarchyFiles.delete(geom);    // read by range this time; try the whole file again next time
+            return null;
+        });
+        _hierarchyFiles.set(geom, file);
+    }
+    return file;
+}
+
+// One Potree 2.0 hierarchy chunk: 22-byte records (type u8, childMask u8, numPoints
+// u32, byteOffset i64, byteSize i64), breadth-first. Record 0 is the chunk's own
+// root; type-2 records are proxies, which reappear as record 0 of the chunk they
+// point to.
+async function _fetchChunk20(geom, offset, size) {
+    const file = await _hierarchyFile(geom);
+    if (file) return new DataView(file, Number(offset), Number(size));
+    return _hierarchyFetch(async () => {
+        const res = await _withRetries(() => fetch(`${geom.loader.url}/../hierarchy.bin`, {
+            headers: { Range: `bytes=${offset}-${offset + size - 1n}` },
+        }));
+        if (!res.ok) throw new Error(`hierarchy.bin: HTTP ${res.status}`);
+        const total = Number(res.headers.get("Content-Range")?.split("/")[1]);   // "bytes a-b/total"
+        if (total > 0) _hierarchyBytes.set(geom, total);
+        return new DataView(await res.arrayBuffer());
+    });
+}
+
+// One COPC hierarchy page: { nodes, pages }, keyed "d-x-y-z". A page lists its own
+// root under `nodes`; child pages are listed under `pages`.
+function _fetchPageCopc(geom, page) {
+    return _hierarchyFetch(() => _withRetries(() => window.Copc.Copc.loadHierarchyPage(geom.getter, page)));
+}
+
+function _countChunk20(geom, offset, size) {
+    return _countOnce(geom, offset, async () => {
+        const view = await _fetchChunk20(geom, offset, size);
+        let nodes = 0, points = 0;
+        const nested = [];
+        for (let o = 0; o + 22 <= view.byteLength; o += 22) {
+            const byteOffset = view.getBigInt64(o + 6, true);
+            const byteSize   = view.getBigInt64(o + 14, true);
+            if (view.getUint8(o) === 2) { nested.push(_countChunk20(geom, byteOffset, byteSize)); continue; }
+            nodes++;
+            if (byteSize !== 0n) points += view.getUint32(o + 2, true);   // the loader's #1125 workaround
+        }
+        for (const r of await Promise.all(nested)) { nodes += r.nodes; points += r.points; }
+        return { nodes, points };
+    });
+}
+
+function _countPageCopc(geom, page) {
+    return _countOnce(geom, page.pageOffset, async () => {
+        const { nodes, pages } = await _fetchPageCopc(geom, page);
+        let count = 0, points = 0;
+        for (const info of Object.values(nodes)) { count++; points += info.pointCount; }
+        const nested = await Promise.all(Object.values(pages).map(pg => _countPageCopc(geom, pg)));
+        for (const r of nested) { count += r.nodes; points += r.points; }
+        return { nodes: count, points };
+    });
+}
+
+/**
+ * Nodes and points in the subtree under `root`, root included, per the file's full
+ * hierarchy rather than the part of it that happens to be in memory.
+ */
+async function countSubtreeFromFile(root) {
+    let nodes = 0, points = 0;
+    const pending = [];
+    (function walk(node) {
+        if (node.nodeType === 2) {                          // 2.0 proxy: chunk not parsed yet
+            pending.push(_countChunk20(node.octreeGeometry, node.hierarchyByteOffset, node.hierarchyByteSize));
+            return;
+        }
+        const page = node.owner && !node.nodeinfo && node.owner.pages[window.Copc.Key.toString(node.key)];
+        if (page) {                                         // COPC node whose page isn't loaded
+            pending.push(_countPageCopc(node.owner, page));
+            return;
+        }
+        nodes++;
+        points += geoNodeNumPoints(node);
+        for (let i = 0; i < 8; i++) if (node.children[i]) walk(node.children[i]);
+    })(root);
+    for (const r of await Promise.all(pending)) { nodes += r.nodes; points += r.points; }
+    return { nodes, points };
+}
+
+/**
+ * Edge length (pointcloud-local) and depth of the deepest node containing the brush
+ * center: the octree's finest cell where the stroke landed. Unlike the subtree counts
+ * above, this loads any proxy on that path, point data included, since a proxy's
+ * children aren't known until it loads.
+ */
+async function leafExtentAt(pc, centerWorld) {
+    const p = centerWorld.clone().applyMatrix4(pc.matrixWorld.clone().invert());
+    let node = pc.pcoGeometry.root;
+    for (;;) {
+        const isProxy = node.nodeType === 2 || (node.owner && !node.nodeinfo);   // 2.0 / COPC
+        if (isProxy) await waitForLoad(node);        // resolves proxy hierarchy
+        const child = Object.values(node.children).find(c => c && c.boundingBox.containsPoint(p));
+        if (!child) break;
+        node = child;
+    }
+    const b = node.boundingBox;                      // cubic, pointcloud-local
+    return { w: b.max.x - b.min.x, depth: node.name.length - 1 };
+}
+
+/**
+ * Log one stroke's profile as a table. Called after the stroke has been timed, so
+ * the hierarchy fetches and loads the report needs never show up in its numbers.
+ */
+async function reportStrokeProfile(p, pointcloud, centerWorld, radius, strokeMs) {
+    const sum = async (roots) => {
+        const total = { nodes: 0, points: 0 };
+        for (const r of await Promise.all(roots.map(countSubtreeFromFile))) {
+            total.nodes += r.nodes; total.points += r.points;
+        }
+        return total;
+    };
+    let bulk = null, same = null, leaf = null;
+    await Promise.all([
+        Promise.all([sum(p.bulkRoots), sum(p.sameRoots)]).then(
+            (r) => { [bulk, same] = r; },
+            (e) => console.warn("[brush] profiler: hierarchy fetch failed, subtree rows omitted", e)),
+        leafExtentAt(pointcloud, centerWorld).then(
+            (r) => { leaf = r; },
+            (e) => console.warn("[brush] profiler: leaf lookup failed, leaf rows omitted", e)),
+    ]);
+    const ok = bulk !== null;
+    // Enclosed = descendants only; the implicit roots themselves were visited.
+    const enclosed = ok ? bulk.nodes - p.bulkRoots.length + same.nodes - p.sameRoots.length : null;
+    // Naive all-explicit pass: every point of every node the stroke covers gets checked.
+    const naive  = ok ? p.points + bulk.points + same.points : null;
+    const noGeom = p.visited - p.bulkRoots.length - p.sameRoots.length - p.partial;
+    // Leaf extent in world units, like the radius (the pointcloud's scale is uniform).
+    const leafW  = leaf ? leaf.w * pointcloud.matrixWorld.getMaxScaleOnAxis() : null;
+
+    const rows = [
+        ["brush radius",                      +formatRadius(radius)],
+        ["leaf extent at center",             leaf ? +leafW.toPrecision(4) : null],
+        ["leaf depth at center",              leaf ? leaf.depth : null],
+        ["radius / leaf extent",              leaf ? +(radius / leafW).toPrecision(3) : null],
+        ["nodes: total (visited + enclosed)", ok ? p.visited + enclosed : null],
+        ["nodes: visited",                    p.visited],
+        ["↳ bulk-marked implicit",            p.bulkRoots.length],
+        ["↳ already implicit, skipped",       p.sameRoots.length],
+        ["↳ explicit per-point",              p.partial],
+        ["↳ …of which fully inside",          p.partialInside],
+        ["↳ no geometry",                     noGeom || null],
+        ["nodes: enclosed below implicit",    enclosed],
+        ["nodes: force-loaded",               p.loaded],
+        ["points: classified",                ok ? bulk.points + p.changed : null],
+        ["↳ implicit (bulk subtrees)",        ok ? bulk.points : null],
+        ["↳ explicit (changed)",              p.changed],
+        ["points: skipped, already implicit", ok ? same.points : null],
+        ["points: checked per-point",         p.points],
+        ["points: naive all-explicit checks", naive],
+        ["points: checks saved",              ok ? naive - p.points : null],
+        ["points: checks saved %",            ok && naive > 0 ? +(100 * (naive - p.points) / naive).toFixed(1) : null],
+        ["time: stroke ms",                   +strokeMs.toFixed(1)],
+        // Summed across concurrent awaits, so it can exceed wall time — read it as
+        // "aggregate node-load wait", not wall-clock network time.
+        ["time: aggregate load-wait ms",      +p.netMs.toFixed(1)],
+    ];
+    console.log("[brush] stroke profile");
+    console.table(Object.fromEntries(rows.filter(([, v]) => v !== null)));
+}
+
 async function classifyInRadius(pointcloud, centerWorld, radius, classification) {
   // Raise load concurrency for the duration of the stroke (restored in finally).
   const _savedMaxNodesLoading = Potree.maxNodesLoading;
   Potree.maxNodesLoading = Math.max(Potree.maxNodesLoading, BRUSH_MAX_NODES_LOADING);
 
   // ── Optional profiler (set window.BRUSH_PROFILE = true to enable) ──
-  // Characterizes where a stroke's time goes: nodes visited vs force-loaded vs
-  // bulk-marked, and wall time spent awaiting network loads vs total. Zero cost
-  // when disabled. Logs one line per stroke to the console.
+  // Characterizes a stroke: the radius against the leaf extent where it landed, how
+  // visited nodes split between implicit (bulk) and explicit (per-point), how much
+  // of the octree the implicit subtrees stand for, per-point checks vs a naive
+  // all-explicit pass, and wall time spent awaiting network loads vs total. Zero
+  // cost when disabled. Logs one table per stroke (reportStrokeProfile).
   const _prof = window.BRUSH_PROFILE ? {
-      t0: performance.now(), visited: 0, loaded: 0, bulk: 0, partial: 0,
-      netMs: 0, points: 0
+      t0: performance.now(), visited: 0, loaded: 0, partial: 0, partialInside: 0,
+      netMs: 0, points: 0, changed: 0,
+      bulkRoots: [], sameRoots: []   // implicit subtree roots: newly bulk-marked / already this class
   } : null;
 
   // #5: Coalesce per-node classification-buffer uploads. Instead of setting
@@ -2427,7 +2672,10 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
             // console.log("node fully inside", geoNode);
             if (isAllEntry(ownEntry)
                 && ownEntry.classification === classification
-                && !ownEntry.overrides) return;
+                && !ownEntry.overrides) {
+                if (_prof) _prof.sameRoots.push(geoNode);
+                return;
+            }
 
             let canBulk = false;
 
@@ -2490,7 +2738,7 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
                 }
                 pcEdits.set(prefix, { all: true, classification });
                 fillLoadedSubtree(geoNode, classification);
-                if (_prof) _prof.bulk++;
+                if (_prof) _prof.bulkRoots.push(geoNode);
                 return;
             }
 
@@ -2512,7 +2760,11 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
         const positions = geoNode.geometry.attributes.position;
         if (!classAttr) return;
 
-        if (_prof) { _prof.partial++; _prof.points += positions.count; }
+        if (_prof) {
+            _prof.partial++;
+            if (skipDistanceTest) _prof.partialInside++;
+            _prof.points += positions.count;
+        }
 
         let ownOverrides = getOverrides(ownEntry);
 
@@ -2536,7 +2788,7 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
         const classArr = classAttr.array;
         const count    = positions.count;
 
-        let anyChanged = false;
+        let nChanged = 0;
 
         // ── Per-node clip matrices: localPos → clipBox local space ──
         let clipNodeMatrices = null;
@@ -2595,7 +2847,7 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
             if (existing?.classification === classification) continue;
 
             classArr[i] = classification;
-            anyChanged = true;
+            nChanged++;
 
             if(!ownOverrides){
                 if (isAllEntry(ownEntry)) {
@@ -2612,7 +2864,8 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
             editedGeoNodes.add(geoNode);
         }
 
-        if (anyChanged) _dirtyAttrs.add(classAttr);   // #5: flushed at await boundaries / stroke end
+        if (nChanged) _dirtyAttrs.add(classAttr);   // #5: flushed at await boundaries / stroke end
+        if (_prof) _prof.changed += nChanged;
 
         const childPromises = [];
         for (let i = 0; i < 8; i++) {
@@ -2638,16 +2891,7 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
     Potree.maxNodesLoading = _savedMaxNodesLoading;
     pumpLoadQueue();
 
-    if (_prof) {
-        const total = (performance.now() - _prof.t0).toFixed(1);
-        // netMs is summed across concurrent awaits, so it can exceed wall time —
-        // read it as "aggregate node-load wait", not wall-clock network time.
-        console.log(
-            `[brush] stroke ${total}ms | visited ${_prof.visited}, ` +
-            `bulk ${_prof.bulk}, partial ${_prof.partial}, force-loaded ${_prof.loaded} | ` +
-            `points tested ${_prof.points}, aggregate load-wait ${_prof.netMs.toFixed(1)}ms`
-        );
-    }
+    if (_prof) await reportStrokeProfile(_prof, pointcloud, centerWorld, radius, performance.now() - _prof.t0);
   }
 }
 
@@ -4296,6 +4540,265 @@ function scaleBrushByZoom () {
     const r = radius * 1;
     brushState.radius = r;
     brushState.sphere.scale.set(r, r, r);
+}
+
+
+// ══════════════════════════════════════════════════════════════
+//  Full Octree Grid
+//
+//  viewer.setShowBoundingBox(true) boxes only the nodes Potree is rendering
+//  right now. setShowAllBoundingBoxes(true) boxes every node of every cloud,
+//  loaded or not, down to the deepest level. The boxes come from the hierarchy
+//  file, read like the stroke profiler's subtree counts: no point data is
+//  fetched and the live octree is never expanded. Each cloud's grid is one
+//  instanced LineSegments (a unit-cube outline stretched to each node) instead
+//  of vanilla's object per node, which would be tens of thousands of draw calls
+//  here. Same yellow as vanilla's Box3Helper; follows the cloud's transform and
+//  visibility.
+// ══════════════════════════════════════════════════════════════
+
+// Nodes per cloud beyond which its grid is skipped with a warning. Memory is light
+// (24 B per box); what bites first is drawing 24 vertices per box every frame.
+const FULL_GRID_MAX_BOXES = 2000000;
+
+const _fullGrids = new Map();   // pointcloud → grid; null while building, false if the build failed
+let _showAllBoxes = false;
+let _fullGridsHooked = false;
+
+/**
+ * viewer.setShowBoundingBox for every octree node, loaded or not. The first call
+ * per cloud reads its whole hierarchy, which takes a while on large clouds; after
+ * that, toggling is instant.
+ */
+function setShowAllBoundingBoxes(value) {
+    _showAllBoxes = !!value;
+    if (_showAllBoxes) {                           // retry clouds whose last build failed
+        for (const [pc, grid] of _fullGrids) if (grid === false) _fullGrids.delete(pc);
+    }
+    if (!_fullGridsHooked) {
+        viewer.addEventListener("update", _updateFullGrids);
+        _fullGridsHooked = true;
+    }
+    _updateFullGrids();
+}
+
+// Every frame: start grids for new clouds, track each cloud's transform and
+// visibility, and drop grids whose cloud has left the scene.
+function _updateFullGrids() {
+    for (const [pc, grid] of _fullGrids) {
+        if (viewer.scene.pointclouds.includes(pc)) continue;
+        _fullGrids.delete(pc);
+        if (grid) {
+            viewer.scene.scene.remove(grid);
+            grid.geometry.dispose();
+            grid.material.dispose();
+        }
+    }
+    for (const pc of viewer.scene.pointclouds) {
+        if (!_fullGrids.has(pc)) {
+            if (_showAllBoxes) _buildFullGrid(pc);
+            continue;
+        }
+        const grid = _fullGrids.get(pc);
+        if (!grid) continue;
+        grid.visible = _showAllBoxes && pc.visible;
+        grid.matrix.multiplyMatrices(pc.matrixWorld, grid.userData.fromOrigin);
+        grid.matrixWorldNeedsUpdate = true;
+    }
+}
+
+async function _buildFullGrid(pc) {
+    _fullGrids.set(pc, null);
+    const t0 = performance.now();
+    console.log(`[octree grid] reading the hierarchy of ${pc.name}…`);
+    const onProgress = (p) => {
+        const s = ((performance.now() - t0) / 1000).toFixed(0);
+        console.log(`[octree grid] ${pc.name}: ` + (p.fraction !== null
+            ? `${Math.floor(100 * p.fraction)}% of the hierarchy read, ${p.boxes.toLocaleString()} boxes so far (${s} s)`
+            : `${p.boxes.toLocaleString()} boxes so far, ${p.chunks.toLocaleString()} hierarchy chunks read (${s} s)`));
+    };
+    try {
+        const { boxes, count, origin, extent, overflow } =
+            await collectNodeBoxes(pc, { limit: FULL_GRID_MAX_BOXES, onProgress });
+        if (overflow) {
+            throw new Error(`more than ${FULL_GRID_MAX_BOXES.toLocaleString()} nodes; raise FULL_GRID_MAX_BOXES to draw it`);
+        }
+        if (!_fullGrids.has(pc)) return;          // the cloud left the scene meanwhile
+        const grid = _makeGridLines(boxes, count, origin, extent);
+        grid.name = `full_octree_grid ${pc.name}`;
+        _fullGrids.set(pc, grid);
+        viewer.scene.scene.add(grid);
+        _updateFullGrids();                       // place it before its first frame
+        console.log(`[octree grid] ${pc.name}: ${count.toLocaleString()} boxes ` +
+                    `in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+    } catch (e) {
+        if (_fullGrids.has(pc)) _fullGrids.set(pc, false);
+        console.warn(`[octree grid] ${pc.name}: not drawn —`, e);
+    }
+}
+
+/**
+ * Every node box of `pointcloud`'s octree, root included, from the file's hierarchy:
+ * the in-memory part directly, each unexpanded proxy through its hierarchy chunk
+ * (2.0) or page (COPC). Boxes are float32 [minX, minY, minZ, maxX, maxY, maxZ] in
+ * pointcloud-local space, relative to the root's min corner (`origin`) so they keep
+ * their precision when the cloud sits at UTM-sized coordinates. Past `limit` boxes
+ * it stops collecting and reports `overflow`.
+ *
+ * While chunks are being read, `onProgress({ boxes, chunks, fraction })` is called
+ * every 2 s. `fraction` is the share of the hierarchy read so far, or null when its
+ * size is unknown (COPC, or a cross-origin server hiding Content-Range).
+ */
+async function collectNodeBoxes(pointcloud, { limit = Infinity, onProgress } = {}) {
+    const geom   = pointcloud.pcoGeometry;
+    const root   = geom.root;
+    const origin = root.boundingBox.min.clone();
+    const sink   = _boxSink(origin, limit);
+    const pending = [];
+    (function walk(node) {
+        const b = node.boundingBox;
+        if (node.nodeType === 2) {                          // 2.0 proxy: chunk not parsed yet
+            const box = [b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z];
+            pending.push(_boxesChunk20(node.octreeGeometry, node.hierarchyByteOffset, node.hierarchyByteSize, box, sink));
+            return;
+        }
+        const page = node.owner && !node.nodeinfo && node.owner.pages[window.Copc.Key.toString(node.key)];
+        if (page) {                                         // COPC node whose page isn't loaded
+            pending.push(_boxesPageCopc(node.owner, page, root.boundingBox, sink));
+            return;
+        }
+        sink.add(b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z);
+        // A 2.0 node that keeps a hierarchy size is the root of a chunk Potree already parsed.
+        if (node.hierarchyByteSize !== undefined) sink.bytes += Number(node.hierarchyByteSize);
+        for (let i = 0; i < 8; i++) if (node.children[i]) walk(node.children[i]);
+    })(root);
+    const ticker = onProgress && setInterval(() => {
+        const total = _hierarchyBytes.get(geom);
+        onProgress({ boxes: sink.count, chunks: sink.chunks, fraction: total ? Math.min(1, sink.bytes / total) : null });
+    }, 2000);
+    try {
+        await Promise.all(pending);
+    } finally {
+        clearInterval(ticker);
+    }
+    return {
+        boxes: sink.data, count: sink.count, origin, overflow: sink.overflow,
+        extent: root.boundingBox.getSize(new THREE.Vector3()),
+    };
+}
+
+// Growable float32 store of boxes relative to `origin`, plus how much of the
+// hierarchy has been read. Past `limit` boxes it stops storing and sets `overflow`.
+function _boxSink(origin, limit) {
+    let data = new Float32Array(6 * 4096), count = 0;
+    return {
+        overflow: false,
+        chunks: 0,      // chunks / pages read from the file
+        bytes: 0,       // 2.0 hierarchy bytes covered: parsed by Potree already, or read here
+        add(x0, y0, z0, x1, y1, z1) {
+            if (count >= limit) { this.overflow = true; return; }
+            if (6 * count === data.length) {
+                const grown = new Float32Array(2 * data.length);
+                grown.set(data);
+                data = grown;
+            }
+            const i = 6 * count++;
+            data[i]     = x0 - origin.x; data[i + 1] = y0 - origin.y; data[i + 2] = z0 - origin.z;
+            data[i + 3] = x1 - origin.x; data[i + 4] = y1 - origin.y; data[i + 5] = z1 - origin.z;
+        },
+        get count() { return count; },
+        get data()  { return data.slice(0, 6 * count); },
+    };
+}
+
+// Boxes of a 2.0 chunk and the chunks below it. `box` is the chunk root's [min, max];
+// records are breadth-first, so each node's children are the next unclaimed records,
+// split from its box as createChildAABB does.
+async function _boxesChunk20(geom, offset, size, box, sink) {
+    if (sink.overflow) return;
+    const view  = await _fetchChunk20(geom, offset, size);
+    sink.chunks++;
+    sink.bytes += view.byteLength;
+    const n     = Math.floor(view.byteLength / 22);
+    const boxes = new Float64Array(6 * n);
+    boxes.set(box);
+    let next = 1;
+    const nested = [];
+    for (let i = 0; i < n; i++) {
+        const o = 22 * i, b = 6 * i;
+        if (i > 0 && view.getUint8(o) === 2) {              // proxy: drawn as record 0 of its own chunk
+            nested.push(_boxesChunk20(geom, view.getBigInt64(o + 6, true), view.getBigInt64(o + 14, true),
+                                      boxes.slice(b, b + 6), sink));
+            continue;
+        }
+        sink.add(boxes[b], boxes[b + 1], boxes[b + 2], boxes[b + 3], boxes[b + 4], boxes[b + 5]);
+        const mask = view.getUint8(o + 1);
+        for (let c = 0; c < 8; c++) if (mask & (1 << c)) _splitBox(boxes, b, c, 6 * next++);
+    }
+    await Promise.all(nested);
+}
+
+// createChildAABB on flat boxes: child `c` of the box at `from`, written at `to`.
+// Child-index bits pick the upper half along x (4), y (2) and z (1).
+function _splitBox(boxes, from, c, to) {
+    for (let a = 0; a < 3; a++) {
+        const min = boxes[from + a], max = boxes[from + 3 + a], half = (max - min) / 2;
+        const upper = c & (4 >> a);
+        boxes[to + a]     = upper ? min + half : min;
+        boxes[to + 3 + a] = upper ? max : max - half;
+    }
+}
+
+// Boxes of a COPC page and the pages below it, placed by key inside the root cube.
+async function _boxesPageCopc(geom, page, cube, sink) {
+    if (sink.overflow) return;
+    const { nodes, pages } = await _fetchPageCopc(geom, page);
+    sink.chunks++;
+    const { min, max } = cube;
+    for (const key of Object.keys(nodes)) {
+        const [d, x, y, z] = key.split("-").map(Number);
+        const sx = (max.x - min.x) / 2 ** d, sy = (max.y - min.y) / 2 ** d, sz = (max.z - min.z) / 2 ** d;
+        sink.add(min.x + x * sx,       min.y + y * sy,       min.z + z * sz,
+                 min.x + (x + 1) * sx, min.y + (y + 1) * sy, min.z + (z + 1) * sz);
+    }
+    await Promise.all(Object.values(pages).map(pg => _boxesPageCopc(geom, pg, cube, sink)));
+}
+
+// One instanced LineSegments: the 12 edges of a unit cube, stretched per instance to
+// a node's [min, max]. Corner order and edges follow Potree's Box3Helper.
+function _makeGridLines(boxes, count, origin, extent) {
+    const geometry = new THREE.InstancedBufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute([
+        0, 0, 0,  1, 0, 0,  1, 0, 1,  0, 0, 1,
+        0, 1, 0,  1, 1, 0,  1, 1, 1,  0, 1, 1,
+    ], 3));
+    geometry.setIndex([0, 1, 1, 2, 2, 3, 3, 0, 4, 5, 5, 6, 6, 7, 7, 4, 0, 4, 1, 5, 2, 6, 3, 7]);
+    const perBox = new THREE.InstancedInterleavedBuffer(boxes, 6, 1);
+    geometry.setAttribute("boxMin", new THREE.InterleavedBufferAttribute(perBox, 3, 0));
+    geometry.setAttribute("boxMax", new THREE.InterleavedBufferAttribute(perBox, 3, 3));
+    geometry.instanceCount = count;
+    // Bound the whole grid, not the unit cube, so frustum culling sees what's drawn.
+    geometry.boundingBox    = new THREE.Box3(new THREE.Vector3(), extent.clone());
+    geometry.boundingSphere = geometry.boundingBox.getBoundingSphere(new THREE.Sphere());
+
+    const material = new THREE.ShaderMaterial({
+        uniforms: { color: { value: new THREE.Color(0xffff00) } },   // Box3Helper's default
+        vertexShader: `
+            attribute vec3 boxMin;
+            attribute vec3 boxMax;
+            void main() {
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(mix(boxMin, boxMax, position), 1.0);
+            }`,
+        fragmentShader: `
+            uniform vec3 color;
+            void main() { gl_FragColor = vec4(color, 1.0); }`,
+    });
+
+    const grid = new THREE.LineSegments(geometry, material);
+    grid.matrixAutoUpdate = false;               // set from the cloud's matrixWorld each frame
+    grid.userData.fromOrigin = new THREE.Matrix4().makeTranslation(origin.x, origin.y, origin.z);
+    grid.raycast = () => {};                     // an overlay, not something to pick
+    return grid;
 }
 
 

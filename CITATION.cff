@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: >-
   If you use this software, please cite it using the metadata below.
   If you use it in academic work, please also cite the associated paper
-  once it is published (see preferred-citation below).
+  (currently under review at Remote Sensing; see preferred-citation below).
 type: software
 title: OpenHeritage3D-VIS
 abstract: >-
@@ -12,20 +12,43 @@ abstract: >-
 authors:
   - family-names: Agarwal
     given-names: Aviral
-    email: aviralagarwal15@gmail.com
+    email: aviral@ucsd.edu
     affiliation: >-
       ALERTCalifornia, Cultural Heritage Engineering Initiative (CHEI),
-      University of California San Diego
+      OpenHeritage3D, University of California San Diego
 repository-code: 'https://github.com/CHEI-OpenHeritage3D/OpenHeritage3D-VIS'
 url: 'https://github.com/CHEI-OpenHeritage3D/OpenHeritage3D-VIS'
 license: BSD-2-Clause
 date-released: '2026-08-18'
 preferred-citation:
   type: article
-  title: TODO — fill in once the paper is published
+  title: Collaborative Classification of Large-Scale Point Clouds in the Web Browser
   authors:
     - family-names: Agarwal
       given-names: Aviral
-  journal: TODO
+      email: aviral@ucsd.edu
+      affiliation: >-
+        ALERTCalifornia, Cultural Heritage Engineering Initiative (CHEI),
+        OpenHeritage3D, University of California San Diego
+    - family-names: McAvoy
+      given-names: Scott
+      email: smcavoy@ucsd.edu
+      affiliation: >-
+        ALERTCalifornia, Cultural Heritage Engineering Initiative (CHEI),
+        OpenHeritage3D, University of California San Diego
+    - family-names: Pierce
+      given-names: Jordan
+      email: j7pierce@ucsd.edu
+      affiliation: >-
+        ALERTCalifornia, Cultural Heritage Engineering Initiative (CHEI),
+        University of California San Diego
+    - family-names: Kuester
+      given-names: Falko
+      email: fkuester@ucsd.edu
+      affiliation: >-
+        ALERTCalifornia, Cultural Heritage Engineering Initiative (CHEI),
+        OpenHeritage3D, University of California San Diego
+  journal: Remote Sensing
   year: 2026
-  doi: TODO
+  status: submitted
+  notes: Under review. Update volume, issue, pages, DOI and status once published.
