@@ -67,6 +67,7 @@
         zoneSearchMenu:   { title: "Zones",                      titleSel: ":scope > h3",      closeSel: ".zone-form-close", w: 400, minW: 320, minH: 200, fixup: fixupZonePanel },
         searchCameraMenu: { title: "Camera Search",              titleSel: ":scope > h3",      closeSel: ".zone-form-close", w: 400, minW: 320, minH: 200 },
         zoneDescWindow:   { title: "Description",                titleSel: ".zs-desc-titlebar h4", closeSel: ".zs-desc-close", w: 380, minW: 280, minH: 140, fixup: fixupDescWindow },
+        pointInspector:   { title: "Point Inspector",            titleSel: ".pi-title",        closeSel: ".pi-close",        w: 290, minW: 250, minH: 150, fixup: fixupPointInspector },
     };
 
     // ══════════════════════════════════════════════════════════════
@@ -156,6 +157,13 @@
      */
     function fixupDescWindow(panel) {
         const bar = panel.querySelector(".zs-desc-titlebar");
+        if (bar) bar.style.setProperty("display", "none", "important");
+    }
+
+    /** Same as the description window: the frame's titlebar replaces the
+     *  Point Inspector's own header row. */
+    function fixupPointInspector(panel) {
+        const bar = panel.querySelector(".pi-header");
         if (bar) bar.style.setProperty("display", "none", "important");
     }
 

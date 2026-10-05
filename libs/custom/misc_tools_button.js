@@ -314,6 +314,10 @@ document.addEventListener("DOMContentLoaded", () => {
 			{
 				name: "Classification", id: "brushModeBtn", onClick: () => openBrushPanel()
 			},
+			// class_hover_picker.js isn't loaded by every page that uses this menu
+			...(typeof togglePointInspector === "function" ? [{
+				name: "Point Inspector", id: "pointInspectorBtn", onClick: () => togglePointInspector()
+			}] : []),
 			// {
 			// 	name: "More Options Coming Soon", id: "extraBtn", onClick: () => {}
 			// },
