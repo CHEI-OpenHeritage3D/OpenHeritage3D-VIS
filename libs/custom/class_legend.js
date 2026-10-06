@@ -412,15 +412,23 @@
         if (pc.material) pc.material.addEventListener("material_property_changed", scheduleCheck);
     }
 
-    viewer.scene.pointclouds.forEach(bind);
-    new MutationObserver(scheduleCheck).observe(document.body, { childList: true });
-    viewer.scene.addEventListener("pointcloud_added", (e) => {
-        bind(e.pointcloud);
+    function init() {
+        viewer.scene.pointclouds.forEach(bind);
+        new MutationObserver(scheduleCheck).observe(document.body, { childList: true });
+        viewer.scene.addEventListener("pointcloud_added", (e) => {
+            bind(e.pointcloud);
+            scheduleCheck();
+        });
+        viewer.addEventListener("classifications_changed", fillLegend);
+        viewer.addEventListener("classification_visibility_changed", syncVisibility);
         scheduleCheck();
-    });
-    viewer.addEventListener("classifications_changed", fillLegend);
-    viewer.addEventListener("classification_visibility_changed", syncVisibility);
-    scheduleCheck();
+    }
+
+    // index.html creates the viewer before this script runs; the Florence and
+    // ALERTCalifornia atlases create it in a module script, which runs after
+    // every classic script but before DOMContentLoaded.
+    if (window.viewer && window.viewer.scene) init();
+    else document.addEventListener("DOMContentLoaded", init);
 
     window.ClassLegend = {
         resolveClass,
