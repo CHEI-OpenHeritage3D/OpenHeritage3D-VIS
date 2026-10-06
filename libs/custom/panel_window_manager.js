@@ -67,7 +67,9 @@
         zoneSearchMenu:   { title: "Zones",                      titleSel: ":scope > h3",      closeSel: ".zone-form-close", w: 400, minW: 320, minH: 200, fixup: fixupZonePanel },
         searchCameraMenu: { title: "Camera Search",              titleSel: ":scope > h3",      closeSel: ".zone-form-close", w: 400, minW: 320, minH: 200 },
         zoneDescWindow:   { title: "Description",                titleSel: ".zs-desc-titlebar h4", closeSel: ".zs-desc-close", w: 380, minW: 280, minH: 140, fixup: fixupDescWindow },
-        pointInspector:   { title: "Point Inspector",            titleSel: ".pi-title",        closeSel: ".pi-close",        w: 290, minW: 250, minH: 150, fixup: fixupPointInspector },
+        pointInspector:   { title: "Point Inspector",            titleSel: ".pi-title",        closeSel: ".pi-close",        w: 300, minW: 260, minH: 150, fixup: fixupPointInspector },
+        classLegend:      { title: "Classification",             titleSel: ".cl-title",        closeSel: ".cl-close",        w: 400, minW: 200, minH: 100, fixup: fixupClassLegend },
+        sceneConfigPanel: { title: "Scene Setup",                titleSel: ".sc-title",        closeSel: ".sc-close",        w: 380, minW: 320, minH: 200, fixup: fixupSceneSetup },
     };
 
     // ══════════════════════════════════════════════════════════════
@@ -164,6 +166,18 @@
      *  Point Inspector's own header row. */
     function fixupPointInspector(panel) {
         const bar = panel.querySelector(".pi-header");
+        if (bar) bar.style.setProperty("display", "none", "important");
+    }
+
+    /** Classification Legend (class_legend.js): same kind of header row. */
+    function fixupClassLegend(panel) {
+        const bar = panel.querySelector(".cl-header");
+        if (bar) bar.style.setProperty("display", "none", "important");
+    }
+
+    /** Scene Setup (scene_config_panel.js) has the same kind of header row. */
+    function fixupSceneSetup(panel) {
+        const bar = panel.querySelector(".sc-header");
         if (bar) bar.style.setProperty("display", "none", "important");
     }
 

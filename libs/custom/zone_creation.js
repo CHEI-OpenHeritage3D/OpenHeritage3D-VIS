@@ -311,16 +311,14 @@ style.textContent += `
 
 /* --------- EXPORT / IMPORT CONTAINER --------- */
 .zone-io-container {
-    display: flex;
-    justify-content: center;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     gap: 8px;
     margin-top: 8px;
-    flex-wrap: wrap;
 }
 
 .zone-io-container .close-btn {
-    width: auto;
-    flex: 1 1 auto;
+    width: 100%;
     margin-top: 0;
     padding: 7px 12px;
     font-size: 12px;
@@ -507,6 +505,7 @@ style.textContent += `
     margin: 5px 0;
     background: rgba(255,255,255,0.03);
     overflow: hidden;
+    flex-shrink: 0;     /* the form scrolls; squeezed sections clipped their headers */
 }
 .zf-section-header {
     display: flex;
@@ -711,6 +710,9 @@ function toggleZoneCreationMenu() {
     importBtn.addEventListener("click", importZonesFromJSON);
     ioContainer.appendChild(importBtn);
 
+    const datasetImport = createDatasetImportRow();
+    if (datasetImport) ioContainer.appendChild(datasetImport);
+
     panel.appendChild(ioContainer);
 
 
@@ -858,6 +860,24 @@ function openZoneForm(zone = null) {
     }
 
     // ═══════════════════════════════════════════════════════
+    //  IMPORT FROM A DATASET (collapsed; same control as the main panel)
+    // ═══════════════════════════════════════════════════════
+    const datasetImport = createDatasetImportRow(() => {
+        // The import replaced the zone being edited: edit the imported one instead, since
+        // saving this form would write into a zone that is no longer in the list.
+        if (isEdit && !window.zones.includes(zone)) {
+            const replacement = window.zones.find(z => z.name === zone.name);
+            if (replacement) { openZoneForm(replacement); return; }
+        }
+        // Otherwise the new zones and clouds just join the choices below.
+        fillParentOptions(parentSelect.value);
+        fillPointcloudOptions(Array.from(pcSelect.selectedOptions).map(o => window.pointcloudMap[o.value]));
+        parentSearch.dispatchEvent(new Event("input"));
+        pcSearch.dispatchEvent(new Event("input"));
+    });
+    if (datasetImport) makeSection("Import Zones from a Dataset").appendChild(datasetImport);
+
+    // ═══════════════════════════════════════════════════════
     //  SECTION 1 · BASICS (name + description)  [open by default]
     // ═══════════════════════════════════════════════════════
     const basicsBody = makeSection("Basics", { open: true });
@@ -924,21 +944,20 @@ function openZoneForm(zone = null) {
     const noneOpt = document.createElement("option");
     noneOpt.value = "none";
     noneOpt.textContent = "None";
-    parentSelect.appendChild(noneOpt);
 
-    window.zones.forEach(z => {
-        if (isEdit && z === zone) return; // don't allow self-parenting
-        const opt = document.createElement("option");
-        opt.value = z.name;
-        opt.textContent = z.name;
-        parentSelect.appendChild(opt);
-    });
-
-    if (isEdit && zone.parent) {
-        parentSelect.value = zone.parent?.name || zone.parent || "none";
-    } else {
-        parentSelect.value = "none";
+    // Also rebuilt after an import from this form, which can add zones.
+    function fillParentOptions(selected) {
+        parentSelect.replaceChildren(noneOpt);
+        window.zones.forEach(z => {
+            if (isEdit && z === zone) return; // don't allow self-parenting
+            const opt = document.createElement("option");
+            opt.value = z.name;
+            opt.textContent = z.name;
+            parentSelect.appendChild(opt);
+        });
+        parentSelect.value = [...parentSelect.options].some(o => o.value === selected) ? selected : "none";
     }
+    fillParentOptions(isEdit && zone.parent ? (zone.parent?.name || zone.parent) : "none");
 
     parentSearch.addEventListener("input", () => {
         const filter = parentSearch.value.toLowerCase();
@@ -992,16 +1011,21 @@ function openZoneForm(zone = null) {
     pcSelect.multiple = true;
     pcSelect.size = 6;
 
-    window.pointcloudMap = {};
-    viewer.scene.pointclouds.forEach((pc, i) => {
-        const id = `pc_${i}`;
-        window.pointcloudMap[id] = pc;
-        const opt = document.createElement("option");
-        opt.value = id;
-        opt.textContent = pc.name || `PointCloud ${i + 1}`;
-        if (isEdit) opt.selected = zone.pointclouds.includes(pc);
-        pcSelect.appendChild(opt);
-    });
+    // Also rebuilt after an import from this form, which can add clouds.
+    function fillPointcloudOptions(selected) {
+        window.pointcloudMap = {};
+        pcSelect.replaceChildren();
+        viewer.scene.pointclouds.forEach((pc, i) => {
+            const id = `pc_${i}`;
+            window.pointcloudMap[id] = pc;
+            const opt = document.createElement("option");
+            opt.value = id;
+            opt.textContent = pc.name || `PointCloud ${i + 1}`;
+            opt.selected = selected.includes(pc);
+            pcSelect.appendChild(opt);
+        });
+    }
+    fillPointcloudOptions(isEdit ? zone.pointclouds : []);
 
     pcSearch.addEventListener("input", () => {
         const filter = pcSearch.value.toLowerCase();
@@ -1932,6 +1956,8 @@ function buildZoneTree() {
 function updateZoneList() {
 
     updateGlobalOrientedImageToggle();
+    // scene_config_panel.js keeps its start-zone list in sync with this
+    document.dispatchEvent(new Event("zones-changed"));
 
     const roots = buildZoneTree();
 
@@ -2105,16 +2131,37 @@ function getZonePriority(zone, visited = new Set()) {
 }
 
 /**
- * Export all zones to a downloadable JSON file.
+ * Export all zones to a downloadable JSON file. When the scene has a
+ * sceneConfig (scene_config.js) the file is schema 2 and carries it too;
+ * otherwise it is the old-style array.
  */
 function exportZonesToJSON() {
-    if (!window.zones || window.zones.length === 0) {
+    const sceneConfig = window.sceneConfig;
+    if (!sceneConfig && (!window.zones || window.zones.length === 0)) {
         alert("No zones to export!");
         return;
     }
 
-    // Prepare plain JSON data (remove circular refs, only store essentials)
-    const zonesData = window.zones.map(z => ({
+    const zonesData = zonesToJSON();
+    const fileData = sceneConfig
+        ? { schema: 2, sceneConfig: sceneConfig.toJSON(), zones: zonesData }
+        : zonesData;
+
+    const blob = new Blob([JSON.stringify(fileData, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "zones.json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+// Plain JSON data for window.zones (no circular refs, only the essentials)
+function zonesToJSON() {
+    return (window.zones || []).map(z => ({
         name: z.name,
         priority: z.priority,
         parent: z.parent?.name || null,
@@ -2156,18 +2203,6 @@ function exportZonesToJSON() {
         }))
 
     }));
-
-
-    const blob = new Blob([JSON.stringify(zonesData, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "zones.json";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
 }
 
 function resolvePointCloudByName(name) {
@@ -2176,9 +2211,94 @@ function resolvePointCloudByName(name) {
     return viewer.scene.pointclouds.find(pc => pc.name.trim() === name.trim()) || null;
 }
 
+// The zone list of a zones.json: the file itself in the old format, its
+// `zones` in schema 2.
+function zonesArrayOf(data) {
+    if (Array.isArray(data)) return data;
+    if (data && Array.isArray(data.zones)) return data.zones;
+    throw new Error("Invalid zone data format.");
+}
+
+// Build Zone objects from zones.json data. Point clouds are matched on
+// pc.name, so they must already be in the scene.
+function zonesFromJSON(list) {
+    return list.map(z => {
+        // Reconstruct bounding boxes as plain data objects
+        const boxes = z.boundingBoxes;
+
+        // Re-link pointclouds if they exist in viewer
+        const pcs = [];
+        if (viewer && viewer.scene && viewer.scene.pointclouds) {
+            for (let pc of viewer.scene.pointclouds) {
+                if (z.pointclouds.includes(pc.name)) pcs.push(pc);
+            }
+        }
+
+        const layerMaps = [];
+
+        if (Array.isArray(z.layerMaps)) {
+            for (const lm of z.layerMaps) {
+                const layersList = [];
+
+                if (Array.isArray(lm.layersList)) {
+                    for (const l of lm.layersList) {                                
+                        const pc = resolvePointCloudByName(l.pointcloud);
+                        layersList.push({
+                            name: l.name,
+                            pointcloud: pc
+                        });
+                    }
+                }
+
+                layerMaps.push({
+                    name: lm.name,
+                    boundingBoxes: lm.boundingBoxes || [],
+                    layersList
+                });
+            }
+        }
+
+        const marker360s = [];
+
+        if (Array.isArray(z.marker360s)){
+            for(const mk of z.marker360s){
+                marker360s.push(new Marker360(
+                    mk.name,
+                    mk.position,
+                    mk.image,
+                    mk.sphereCorrection,
+                    mk.tiles
+                ));
+            }
+        }
+
+
+        const annotations = [];
+        if (Array.isArray(z.annotations)) {
+            for (const a of z.annotations) {
+                const ann = viewer.scene.addAnnotation(a.position, {
+                title: a.title,
+                type: a.type,
+                description: a.description,
+                cameraPosition: a.cameraPosition,
+                cameraTarget: a.cameraTarget
+                });
+                ann.visible = false;
+                ann.userData = { type: a.type || "none" };
+                // console.log(ann);
+                annotations.push(ann);
+            }
+        }
+
+
+        const orientedHandlers = buildOrientedImagesHandlers(z);
+        return new Zone(z.name, z.parent, Number(z.priority), pcs, boxes, annotations, layerMaps, marker360s, z.beacon || null, z.description || ``, z.background || "gradient", z.isDefault || false, orientedHandlers);
+    });
+}
+
 
 /**
- * Import zones from a JSON file and refresh the list.
+ * Import zones from a JSON file and merge them into the existing ones.
  */
 function importZonesFromJSON() {
     const input = document.createElement("input");
@@ -2190,86 +2310,10 @@ function importZonesFromJSON() {
         if (!file) return;
 
         const reader = new FileReader();
-        reader.onload = (e) => {
+        reader.onload = async (e) => {
         try {
-            const importedData = JSON.parse(e.target.result);
-            if (!Array.isArray(importedData)) throw new Error("Invalid zone data format.");
-
-            window.zones = importedData.map(z => {
-                // Reconstruct bounding boxes as plain data objects
-                const boxes = z.boundingBoxes;
-
-                // Re-link pointclouds if they exist in viewer
-                const pcs = [];
-                if (viewer && viewer.scene && viewer.scene.pointclouds) {
-                    for (let pc of viewer.scene.pointclouds) {
-                        if (z.pointclouds.includes(pc.name)) pcs.push(pc);
-                    }
-                }
-
-                const layerMaps = [];
-
-                if (Array.isArray(z.layerMaps)) {
-                    for (const lm of z.layerMaps) {
-                        const layersList = [];
-
-                        if (Array.isArray(lm.layersList)) {
-                            for (const l of lm.layersList) {                                
-                                const pc = resolvePointCloudByName(l.pointcloud);
-                                layersList.push({
-                                    name: l.name,
-                                    pointcloud: pc
-                                });
-                            }
-                        }
-
-                        layerMaps.push({
-                            name: lm.name,
-                            boundingBoxes: lm.boundingBoxes || [],
-                            layersList
-                        });
-                    }
-                }
-
-                const marker360s = [];
-
-                if (Array.isArray(z.marker360s)){
-                    for(const mk of z.marker360s){
-                        marker360s.push(new Marker360(
-                            mk.name,
-                            mk.position,
-                            mk.image,
-                            mk.sphereCorrection,
-                            mk.tiles
-                        ));
-                    }
-                }
-
-
-                const annotations = [];
-                if (Array.isArray(z.annotations)) {
-                    for (const a of z.annotations) {
-                        const ann = viewer.scene.addAnnotation(a.position, {
-                        title: a.title,
-                        type: a.type,
-                        description: a.description,
-                        cameraPosition: a.cameraPosition,
-                        cameraTarget: a.cameraTarget
-                        });
-                        ann.visible = false;
-                        ann.userData = { type: a.type || "none" };
-                        // console.log(ann);
-                        annotations.push(ann);
-                    }
-                }
-
-
-                const orientedHandlers = buildOrientedImagesHandlers(z);
-                return new Zone(z.name, z.parent, Number(z.priority), pcs, boxes, annotations, layerMaps, marker360s, z.beacon || null, z.description || ``, z.background || "gradient", z.isDefault || false, orientedHandlers);
-            });
-
-            initZonesOps();
-            alert("Zones imported successfully!");
+            const summary = await importZonesData(JSON.parse(e.target.result));
+            alert(`Zones imported: ${summary}`);
         } catch (err) {
             console.error(err);
             alert("Failed to import zones: " + err.message);
@@ -2283,113 +2327,391 @@ function importZonesFromJSON() {
     input.click();
 }
 
+/**
+ * Import the zones.json of a dataset in one of the archives (index.html's
+ * VTYPE_CONFIG), found the way index.html finds a scene's own.
+ */
+async function importZonesFromDataset(vtype, doi) {
+    const url = new URL(VTYPE_CONFIG[vtype].datasetPrefix + doi + "/potree/zones.json", window.location.href).href;
+    const data = await fetchZonesFile(url);
+    if (!data) throw new Error(`no zones.json could be read from ${url}`);
+    return importZonesData(data, { vtype, doi });
+}
+
+/**
+ * Merge zones.json data (old-style array or schema 2) into the scene. When
+ * some names are already taken, the user picks whether the imported zones
+ * replace those or are skipped. `dataset` ({ vtype, doi }) is where the file
+ * came from, if not this scene's own dataset. Returns a summary for the user.
+ */
+async function importZonesData(importedData, dataset = null) {
+    const list = zonesArrayOf(importedData);
+
+    // Zones are matched by name (parents, start zones and share links refer to them that way).
+    const existing = new Map(window.zones.map(z => [z.name, z]));
+    const clashes = list.filter(z => existing.has(z.name)).map(z => z.name);
+    const replace = clashes.length > 0 && confirm(
+        `These zones already exist: ${clashes.join(", ")}.\n\n` +
+        "OK: replace them with the imported ones.\n" +
+        "Cancel: keep the existing ones and skip these.");
+    const incoming = list.filter(z => replace || !existing.has(z.name));
+
+    // A schema-2 file brings its own clouds. They go in first: zones match clouds by name.
+    const schema2 = typeof isSceneConfigFile === "function" && isSceneConfigFile(importedData);
+    const cloudIds = schema2 ? await mergeImportedSceneConfig(importedData.sceneConfig, dataset) : [];
+
+    const added = zonesFromJSON(incoming);
+    const reshow = [];
+    let replaced = 0;
+    for (const zone of added) {
+        const old = existing.get(zone.name);
+        if (!old) {
+            window.zones.push(zone);
+            continue;
+        }
+        // Same place in the list, same children, and still on if it was.
+        if (window.newVisibleZones.has(old)) reshow.push(zone);
+        disposeZone(old);
+        window.zones[window.zones.indexOf(old)] = zone;
+        for (const z of window.zones) if (z.parent === old) z.parent = zone;
+        replaced++;
+    }
+    initAddedZones(added);
+    for (const zone of reshow) setZoneVisibility(zone, true);
+
+    const skipped = list.length - incoming.length;
+    const parts = [`${added.length - replaced} added`];
+    if (replaced) parts.push(`${replaced} replaced`);
+    if (skipped) parts.push(`${skipped} skipped`);
+    if (cloudIds.length) parts.push(`${cloudIds.length} point cloud${cloudIds.length === 1 ? "" : "s"} added`);
+    let summary = parts.join(", ") + ".";
+
+    // Zones can only hold clouds that are in the scene; say which ones they asked for and didn't get.
+    const missing = [...new Set(incoming.flatMap(z => z.pointclouds || []))].filter(name => !resolvePointCloudByName(name));
+    if (missing.length) {
+        summary += `\n\n${missing.length} point cloud${missing.length === 1 ? " the zones use is" : "s the zones use are"} ` +
+            `not in this scene, so ${missing.length === 1 ? "it was" : "they were"} left out: ` +
+            missing.slice(0, 8).join(", ") + (missing.length > 8 ? ", …" : "") + ".";
+        if (dataset && !schema2) {
+            summary += " That dataset's zones.json is the old format, which doesn't say where its point clouds are.";
+        }
+    }
+    return summary;
+}
+
+// Each archive's projects, from its website's api/potree_projects.php ({ doi: project name }), as
+// [{ doi, name }] sorted by name, or null when the archive's site doesn't serve the list. Fetched once
+// per page, failures included, so archives without one aren't asked again on every keystroke.
+const _projectLists = new Map();
+function fetchProjectList(vtype) {
+    if (!_projectLists.has(vtype)) {
+        const site = VTYPE_CONFIG[vtype]?.website;
+        _projectLists.set(vtype, !site ? Promise.resolve(null) : fetch(`${site}/api/potree_projects.php`)
+            .then(res => res.ok ? res.json() : null)
+            .then(data => data && typeof data === "object" && !Array.isArray(data)
+                ? Object.entries(data)
+                    .map(([doi, name]) => ({ doi, name: String(name || doi) }))
+                    .sort((a, b) => a.name.localeCompare(b.name))
+                : null)
+            .catch(() => null));
+    }
+    return _projectLists.get(vtype);
+}
+
+// "Import from a dataset": an archive from index.html's VTYPE_CONFIG and one of its projects, picked
+// from a searchable list (or typed as a DOI when the archive has no list); that dataset's zones.json is
+// merged in, then onImported() runs. Null on pages without VTYPE_CONFIG (standalone.html, other sites).
+function createDatasetImportRow(onImported = null) {
+    if (typeof VTYPE_CONFIG === "undefined") return null;
+    const MAX_ROWS = 200;
+
+    const box = document.createElement("div");
+    box.className = "zone-dataset-import";
+
+    const label = document.createElement("div");
+    label.className = "zone-dataset-import-label";
+    label.textContent = "Import zones from a dataset";
+    box.appendChild(label);
+
+    const row = document.createElement("div");
+    row.className = "zone-dataset-import-row";
+    box.appendChild(row);
+
+    const archive = document.createElement("select");
+    archive.title = "Archive";
+    for (const [key, cfg] of Object.entries(VTYPE_CONFIG)) {
+        const opt = document.createElement("option");
+        opt.value = key;
+        opt.textContent = cfg.websiteName || key;
+        archive.appendChild(opt);
+    }
+    // Start on the archive this scene is from.
+    const current = Object.keys(VTYPE_CONFIG).find(k => VTYPE_CONFIG[k].datasetPrefix === window.datasetPrefix);
+    if (current) archive.value = current;
+    row.appendChild(archive);
+
+    const search = document.createElement("input");
+    search.type = "text";
+    search.placeholder = "Search or type a DOI";
+    search.spellcheck = false;
+    search.autocomplete = "off";
+    row.appendChild(search);
+
+    const btn = document.createElement("button");
+    btn.className = "close-btn";
+    btn.textContent = "Import";
+    row.appendChild(btn);
+
+    // In the panel's flow rather than floating: the window frame clips anything that overflows it.
+    const list = document.createElement("div");
+    list.className = "zone-dataset-list";
+    list.hidden = true;
+    box.appendChild(list);
+
+    const status = document.createElement("div");
+    status.className = "zone-dataset-status";
+    box.appendChild(status);
+
+    let loadedFor = null;     // archive whose list was asked for
+    let loading = false;
+    let projects = null;      // that archive's [{ doi, name }], or null if it has none
+    let chosen = null;        // the project picked from the list
+    let matches = [];
+    let active = -1;          // highlighted row
+
+    const showStatus = () => {
+        if (loading) status.textContent = "Loading projects…";
+        else if (chosen) status.textContent = `DOI ${chosen.doi}`;
+        else if (projects) status.textContent = `${projects.length} projects. Search by name or DOI.`;
+        else if (loadedFor) status.textContent = "This archive has no project list. Type a DOI.";
+        else status.textContent = "";
+    };
+
+    const highlight = i => {
+        active = i;
+        [...list.children].forEach((el, j) => el.classList.toggle("active", j === i));
+        list.children[i]?.scrollIntoView({ block: "nearest" });
+    };
+
+    const pick = project => {
+        chosen = project;
+        search.value = project.name;
+        list.hidden = true;
+        showStatus();
+    };
+
+    const showList = () => {
+        const q = search.value.trim().toLowerCase();
+        matches = (projects || []).filter(p => !q || p.name.toLowerCase().includes(q) || p.doi.toLowerCase().includes(q));
+        const rows = matches.slice(0, MAX_ROWS).map(project => {
+            const item = document.createElement("div");
+            item.className = "zone-dataset-item";
+            const name = document.createElement("span");
+            name.className = "zone-dataset-name";
+            name.textContent = project.name;
+            name.title = project.name;
+            const doi = document.createElement("span");
+            doi.className = "zone-dataset-doi";
+            doi.textContent = project.doi;
+            item.append(name, doi);
+            // mousedown, not click: it fires before the input loses focus and closes the list
+            item.addEventListener("mousedown", e => { e.preventDefault(); pick(project); });
+            return item;
+        });
+        if (matches.length > MAX_ROWS) {
+            const more = document.createElement("div");
+            more.className = "zone-dataset-more";
+            more.textContent = `${matches.length - MAX_ROWS} more. Keep typing to narrow it down.`;
+            rows.push(more);
+        }
+        list.replaceChildren(...rows);
+        list.hidden = matches.length === 0;
+        highlight(matches.length ? 0 : -1);
+    };
+
+    const load = async () => {
+        const vtype = archive.value;
+        loadedFor = vtype;
+        loading = true;
+        showStatus();
+        const result = await fetchProjectList(vtype);
+        if (archive.value !== vtype) return;     // switched archives meanwhile
+        loading = false;
+        projects = result;
+        showStatus();
+        if (document.activeElement === search) showList();
+    };
+
+    const run = async () => {
+        const typed = search.value.trim();
+        const lower = typed.toLowerCase();
+        const project = chosen || projects?.find(p => p.doi.toLowerCase() === lower || p.name.toLowerCase() === lower);
+        const doi = project ? project.doi : typed;
+        if (!doi) { search.focus(); return; }
+
+        list.hidden = true;
+        btn.disabled = true;
+        btn.textContent = "Importing…";
+        try {
+            const summary = await importZonesFromDataset(archive.value, doi);
+            alert(`Zones imported from ${project ? `${project.name} (${doi})` : doi}: ${summary}`);
+            if (onImported) onImported();
+        } catch (err) {
+            console.error(err);
+            alert("Failed to import zones: " + err.message);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = "Import";
+        }
+    };
+
+    archive.addEventListener("change", () => {
+        chosen = null;
+        search.value = "";
+        projects = null;
+        load();
+    });
+    search.addEventListener("focus", () => {
+        if (loadedFor !== archive.value) load();
+        else if (!chosen) showList();
+    });
+    search.addEventListener("blur", () => { list.hidden = true; });
+    search.addEventListener("input", () => {
+        chosen = null;
+        showStatus();
+        showList();
+    });
+    search.addEventListener("keydown", e => {
+        const listOpen = !list.hidden && matches.length > 0;
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            if (!listOpen) showList();
+            else highlight((active + (e.key === "ArrowDown" ? 1 : -1) + Math.min(matches.length, MAX_ROWS)) % Math.min(matches.length, MAX_ROWS));
+        } else if (e.key === "Enter") {
+            // First Enter picks the highlighted project, the next one imports it.
+            if (listOpen && active >= 0) pick(matches[active]);
+            else run();
+        } else if (e.key === "Escape") {
+            list.hidden = true;
+        } else {
+            return;
+        }
+        e.preventDefault();
+        e.stopPropagation();     // keep these keys away from the viewer's own shortcuts
+    });
+    btn.addEventListener("click", run);
+
+    return box;
+}
+
+style.textContent += `
+/* Import zones from a dataset: a full-width row under the export/import buttons */
+.zone-dataset-import {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 2px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255,255,255,0.09);
+}
+.zone-dataset-import-label { font-size: 12px; color: #a1a1aa; }
+.zone-dataset-import-row { display: flex; gap: 6px; }
+.zone-dataset-import select,
+.zone-dataset-import input {
+    min-width: 0;
+    padding: 6px 8px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 7px;
+    color: #f0f0f5;
+    font-size: 12px;
+    outline: none;
+}
+.zone-dataset-import select { flex: 0 1 36%; cursor: pointer; }
+.zone-dataset-import select option { background: #1b1c20; color: #fff; }
+.zone-dataset-import input { flex: 1 1 auto; }
+.zone-dataset-import input::placeholder { color: #71717a; }
+.zone-dataset-import select:focus,
+.zone-dataset-import input:focus { border-color: #6e6bff; }
+.zone-io-container .zone-dataset-import .close-btn { width: auto; flex: 0 0 auto; }
+.zone-io-container .zone-dataset-import .close-btn:disabled { opacity: 0.6; cursor: default; }
+
+.zone-dataset-list {
+    max-height: 200px;
+    overflow-y: auto;
+    padding: 3px;
+    background: rgba(0,0,0,0.35);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 7px;
+}
+.zone-dataset-list::-webkit-scrollbar { width: 5px; }
+.zone-dataset-list::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
+.zone-dataset-item {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 5px 7px;
+    border-radius: 5px;
+    color: #e5e7eb;
+    font-size: 12px;
+    cursor: pointer;
+}
+.zone-dataset-item:hover,
+.zone-dataset-item.active { background: rgba(79,70,229,0.35); }
+.zone-dataset-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zone-dataset-doi { flex: 0 0 auto; color: #9ca3af; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+.zone-dataset-more { padding: 5px 7px; color: #8b8b98; font-size: 11.5px; }
+.zone-dataset-status { font-size: 11.5px; color: #8b8b98; }
+.zone-dataset-status:empty { display: none; }
+
+/* Inside the zone form it sits in its own section, under the form's input/button styles */
+.zone-form .zone-dataset-import { margin: 0; padding: 0; border-top: none; }
+.zone-form .zone-dataset-import-label { display: none; }
+.zone-form .zone-dataset-import select,
+.zone-form .zone-dataset-import input { margin: 0; padding: 6px 8px; font-size: 12px; }
+.zone-form .zone-dataset-import .close-btn { width: auto; flex: 0 0 auto; margin: 0; padding: 6px 12px; font-size: 12px; }
+.zone-form .zone-dataset-import .close-btn:disabled { opacity: 0.6; cursor: default; }
+`;
+
 
 /**
  * Automatically load "zones.json" from the same directory (if present)
  * and import it using the same logic as importZonesFromJSON.
  */
 async function autoLoadZonesJSON(json) {
-    return fetch(json, { cache: "no-store" })
-        .then(response => {
-            if (!response.ok) {
-                console.warn("zones.json not found or failed to load.");
-                return null;
-            }
-            return response.json();
-        })
-        .then(importedData => {
-            if (!importedData) return false;
+    // Fetched again even though index.html already has it: initZones() only waits for the clouds
+    // added so far, and this round trip is what gives config.js time to add the rest before
+    // zones match them by name.
+    const importedData = await fetchZonesFile(json);
+    if (!importedData) return false;
 
-            try {
-                if (!Array.isArray(importedData)) throw new Error("Invalid zone data format.");
+    try {
+        window.zones = zonesFromJSON(zonesArrayOf(importedData));
 
-                // This block is identical to what your importZonesFromJSON() does internally.
-                window.zones = importedData.map(z => {
-                    const boxes = z.boundingBoxes;
+        initZonesOps();
+        document.addEventListener("pointermove", onPointerMove, { passive: true });
 
-                    const pcs = [];
-                    if (viewer && viewer.scene && viewer.scene.pointclouds) {
-                        for (let pc of viewer.scene.pointclouds) {
-                            if (z.pointclouds.includes(pc.name)) pcs.push(pc);
-                        }
-                    }
+        console.log("zones.json loaded successfully.");
+        return true;
+    } catch (err) {
+        console.error("Error parsing zones.json:", err);
+        return false;
+    }
+}
 
-                const layerMaps = [];
-
-                if (Array.isArray(z.layerMaps)) {
-                    for (const lm of z.layerMaps) {
-                        const layersList = [];
-
-                        if (Array.isArray(lm.layersList)) {
-                            for (const l of lm.layersList) {                                
-                                const pc = resolvePointCloudByName(l.pointcloud);
-                                layersList.push({
-                                    name: l.name,
-                                    pointcloud: pc
-                                });
-                            }
-                        }
-
-                        layerMaps.push({
-                            name: lm.name,
-                            boundingBoxes: lm.boundingBoxes || [],
-                            layersList
-                        });
-                    }
-                }
-
-                const marker360s = [];
-
-                if (Array.isArray(z.marker360s)){
-                    for(const mk of z.marker360s){
-                        marker360s.push(new Marker360(
-                            mk.name,
-                            mk.position,
-                            mk.image,
-                            mk.sphereCorrection,
-                            mk.tiles
-                        ));
-                    }
-                }
-
-                const annotations = [];
-                if (Array.isArray(z.annotations)) {
-                    for (const a of z.annotations) {
-                        const ann = viewer.scene.addAnnotation(a.position, {
-                        title: a.title,
-                        type: a.type,
-                        description: a.description,
-                        cameraPosition: a.cameraPosition,
-                        cameraTarget: a.cameraTarget
-                        });
-                        ann.visible = false;
-                        ann.userData = { type: a.type || "none" };
-                        // console.log(ann);
-                        annotations.push(ann);
-                    }
-                }
-                
-                //temporary system
-
-                const orientedHandlers = buildOrientedImagesHandlers(z);
-                return new Zone(z.name, z.parent, Number(z.priority), pcs, boxes, annotations, layerMaps, marker360s, z.beacon || null, z.description || ``, z.background || "gradient", z.isDefault || false, orientedHandlers);
-                });
-                
-
-                initZonesOps();
-                document.addEventListener("pointermove", onPointerMove, { passive: true });
-
-                console.log("zones.json loaded successfully.");
-                return true;
-            } catch (err) {
-                console.error("Error parsing zones.json:", err);
-                return false;
-            }
-        })
-        .catch(err => {
-            console.warn("No zones.json found or failed to load:", err);
-            return false;
-        });
+// Fetch and parse a zones.json; null when it is missing or unreadable.
+async function fetchZonesFile(url) {
+    try {
+        const response = await fetch(url, { cache: "no-store" });
+        if (!response.ok) {
+            console.warn("zones.json not found or failed to load.");
+            return null;
+        }
+        return await response.json();
+    } catch (err) {
+        console.warn("No zones.json found or failed to load:", err);
+        return null;
+    }
 }
 
 
@@ -2418,6 +2740,65 @@ function initZonesOps () {
     // switched some sets on; mask everything off via the same global
     // toggle the user would otherwise click.
     setAllOrientedImagesVisibility(false);
+}
+
+// Set up zones added after startup (an import). initZonesOps() is for a whole new zone list: its
+// loaders walk every zone in window.zones and would duplicate the objects of zones already set up.
+function initAddedZones(added) {
+    // createLayerBoxes() and loadMarker360s() set up every zone in window.zones, so for the
+    // moment they run, that is just the added ones.
+    const all = window.zones;
+    window.zones = added;
+    try {
+        createLayerBoxes();
+        loadMarker360s();
+    } finally {
+        window.zones = all;
+    }
+    updateZoneList();       // also resolves parents and rebuilds zone.children, which beacons hang off
+    updateZoneCount();
+    rebuildZoneBeacons();
+    enableFirstZone();
+    if (typeof _refreshZoneSearchPanel === "function") _refreshZoneSearchPanel();
+}
+
+// Take a zone that is being replaced out of the scene: switch it off, then remove
+// what it added (annotations, layer-map boxes, 360 markers, its beacon).
+function disposeZone(zone) {
+    if (window.newVisibleZones.has(zone)) setZoneVisibility(zone, false);
+    _currentlyVisibleZones.delete(zone);
+    if (window._isolatedZone === zone) window._isolatedZone = null;
+    resetZoneOrientedImages(zone, false);
+
+    for (const ann of zone.annotations || []) viewer.scene.removeAnnotation(ann);
+    for (const lm of zone.layerMaps || []) lm._triggerBox?.parent?.remove(lm._triggerBox);
+    for (const mk of zone.marker360s || []) mk._sphereMarker?.parent?.remove(mk._sphereMarker);
+    zone.beacon?._sphere?.parent?.remove(zone.beacon._sphere);
+}
+
+// A zone's beacon is built by its parent's createBeacons(), so when the tree changes the
+// beacons are rebuilt from the roots down rather than patched. Beacons that existed keep
+// their visibility; new ones show when their parent zone is on.
+function rebuildZoneBeacons() {
+    const shown = new Map();
+    for (const zone of window.zones) {
+        const beacon = zone.beacon;
+        if (!beacon?._sphere) continue;
+        shown.set(zone, beacon._sphere.visible);
+        beacon._sphere.parent?.remove(beacon._sphere);
+        delete beacon._sphere;
+        delete beacon._hitMesh;
+        delete beacon._raycast;
+    }
+    for (const root of window.zones.filter(z => !z.parent || z.parent === "none")) createBeacons(root);
+
+    for (const zone of window.zones) {
+        const beacon = zone.beacon;
+        if (!beacon?._sphere) continue;
+        const visible = shown.has(zone) ? shown.get(zone) : window.newVisibleZones.has(zone.parent);
+        beacon._sphere.visible = visible;
+        if (beacon._hitMesh) beacon._hitMesh.raycast = visible ? beacon._raycast : () => {};
+    }
 }
 
 

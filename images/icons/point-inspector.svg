@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Point Inspector toolbar icon: a cursor clicking at the centre of a ring.
+     Same palette as Potree's measure icons (light fill, dark outline). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+	<!-- click ring: dark outline under a light stroke -->
+	<circle cx="14" cy="11.5" r="7.5" fill="none" stroke="#3C3533" stroke-width="4.2"/>
+	<circle cx="14" cy="11.5" r="7.5" fill="none" stroke="#A9A3A1" stroke-width="2"/>
+	<!-- cursor, tip on the ring's centre -->
+	<path d="M14 11.5 L14 26.5 L17.6 23.1 L20.5 29 L23.5 27.6 L20.6 21.8 L25.7 21.7 Z"
+	      fill="#A9A3A1" stroke="#3C3533" stroke-width="1.6" stroke-linejoin="round"/>
+</svg>

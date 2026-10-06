@@ -301,6 +301,10 @@ document.addEventListener("DOMContentLoaded", () => {
 			{
 				name: "Zone Management", id: "createZoneButton", onClick: () => toggleZoneCreationMenu()
 			},
+			// scene_config_panel.js isn't loaded by the external sites that use this menu
+			...(typeof toggleSceneSetup === "function" ? [{
+				name: "Scene Setup", id: "sceneSetupBtn", onClick: () => toggleSceneSetup()
+			}] : []),
 			{
 				name: "Download Selection", id: "downloadVolumeBtn", onClick: () => {
 					openDownloadPanel();
@@ -315,9 +319,9 @@ document.addEventListener("DOMContentLoaded", () => {
 				name: "Classification", id: "brushModeBtn", onClick: () => openBrushPanel()
 			},
 			// class_hover_picker.js isn't loaded by every page that uses this menu
-			...(typeof togglePointInspector === "function" ? [{
-				name: "Point Inspector", id: "pointInspectorBtn", onClick: () => togglePointInspector()
-			}] : []),
+			// ...(typeof togglePointInspector === "function" ? [{
+			// 	name: "Point Inspector", id: "pointInspectorBtn", onClick: () => togglePointInspector()
+			// }] : []),
 			// {
 			// 	name: "More Options Coming Soon", id: "extraBtn", onClick: () => {}
 			// },

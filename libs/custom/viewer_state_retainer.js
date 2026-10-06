@@ -50,11 +50,36 @@ function loadParams () {
 }
 
 /**
+ * Show exactly the named zones: hide every pointcloud that belongs to none of
+ * them, then enable them (skipping any a startup path such as
+ * enableFirstZone already enabled, to not duplicate volumes).
+ * Returns false, changing nothing, when none of the names exist.
+ */
+function showOnlyZones(names, stopAutoSwitch) {
+    const wanted = (window.zones || []).filter(z => names.includes(z.name));
+    if (!wanted.length) return false;
+
+    if (stopAutoSwitch) setAutoSwitchState(false);
+
+    const wantedPCs = new Set();
+    for (const z of wanted) for (const pc of (z.pointclouds || [])) wantedPCs.add(pc);
+    for (const pc of viewer.scene.pointclouds) {
+        if (!wantedPCs.has(pc)) pc.visible = false;
+    }
+    for (const z of wanted) {
+        if (!window.newVisibleZones.has(z)) setZoneVisibility(z, true);
+    }
+    refreshZoneCheckboxStates();
+    return true;
+}
+
+/**
  * One-time startup restore of zone visibility. Runs once zones AND
  * pointclouds are loaded (called at the end of initZonesOps/createZones):
  *   1. visibleZones URL param  → show exactly those zones.
  *   2. legacy visiblePCs param → apply pointcloud visibility, then infer.
- *   3. no zone info in the URL → infer which zones the default pointcloud
+ *   3. startZones of a schema-2 zones.json (scene_config.js) → show those.
+ *   4. none of the above       → infer which zones the default pointcloud
  *      visibility corresponds to, so the zone checkboxes reflect reality.
  */
 function applyZoneVisibilityFromURL() {
@@ -65,27 +90,13 @@ function applyZoneVisibilityFromURL() {
 
     if (params.has("visibleZones")) {
         const names = params.get("visibleZones").split(",").map(decodeURIComponent);
-        const wanted = (window.zones || []).filter(z => names.includes(z.name));
-
-        if (wanted.length) {
-            setAutoSwitchState(false);
-
-            // Hide every pointcloud that belongs to no wanted zone, then
-            // enable the wanted zones (skipping any a startup path such as
-            // enableFirstZone already enabled, to not duplicate volumes).
-            const wantedPCs = new Set();
-            for (const z of wanted) for (const pc of (z.pointclouds || [])) wantedPCs.add(pc);
-            for (const pc of viewer.scene.pointclouds) {
-                if (!wantedPCs.has(pc)) pc.visible = false;
-            }
-            for (const z of wanted) {
-                if (!window.newVisibleZones.has(z)) setZoneVisibility(z, true);
-            }
-            refreshZoneCheckboxStates();
-            return;
-        }
+        if (showOnlyZones(names, true)) return;
         // Named zones don't exist (renamed/removed) — fall through to inference.
     }
+
+    // Auto-switch stays on here: start zones are a default, and a camera that
+    // starts inside a zone's box should still switch to that zone.
+    if (!params.has("visiblePCs") && showOnlyZones(window.sceneConfig?.startZones || [], false)) return;
 
     // Legacy links stored pointcloud names: apply them so the inference
     // below reconstructs the matching zones.

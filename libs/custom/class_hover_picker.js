@@ -4,24 +4,29 @@
  * Author: (OpenHeritage3D / CHEI, UC San Diego)
  *
  * Description:
- *   A compact floating window that shows the properties of the point under
- *   the cursor: classification (resolved to its name and colour), position,
- *   RGB, intensity, returns, and any other per-point attribute the cloud
- *   carries. The window is framed, placed and made draggable/resizable by
- *   panel_window_manager.js, the same way as the annotation description
- *   window.
+ *   A floating window that shows everything about the point under the
+ *   cursor: its classification (as a chip from the Classification Legend,
+ *   class_legend.js), position, RGB, intensity, returns, and any other
+ *   per-point attribute the cloud carries. The window is framed, placed and
+ *   made draggable/resizable by panel_window_manager.js, the same way as the
+ *   annotation description window.
  *
  *   A reticle marks the point being inspected, since the pick snaps to the
  *   nearest point within a few pixels of the cursor rather than the exact
  *   pixel under it.
  *
  * Usage:
- *   Tools ▸ Point Inspector, or press I.  While the window is open:
- *     L                lock / unlock the current point, so the mouse can
+ *   Toolbar ▸ Point Inspector, Tools ▸ Point Inspector, or press I.
+ *   While the window is open:
+ *     left click       lock the point under the cursor, so the mouse can
  *                      travel to the window (or the camera can orbit)
- *                      without the readout changing underneath it
+ *                      without the readout changing; click again to release.
+ *                      L does the same from the keyboard.
  *     click Position   copy X, Y, Z
  *     copy button      copy every property as text
+ *
+ *   Load class_legend.js first for class names and colours; without it the
+ *   class shows as its bare code.
  *
  * Notes:
  *   • GPS time is deliberately not shown. Potree's pick() returns it through
@@ -42,20 +47,6 @@
     // Pixel window the pick searches for the nearest point. Small enough to
     // feel precise, large enough not to flicker across gaps in sparse clouds.
     const PICK_WINDOW = 25;
-
-    // Standard ASPRS LAS 1.4 classes (8 and 12 use their LAS 1.2 meanings,
-    // which is what the viewer's own palette uses). Last-resort fallback for
-    // codes the viewer and brush don't name.
-    const ASPRS_CLASSES = {
-        0: "Never Classified",  1: "Unclassified",       2: "Ground",
-        3: "Low Vegetation",    4: "Medium Vegetation",  5: "High Vegetation",
-        6: "Building",          7: "Low Point (Noise)",  8: "Key-Point",
-        9: "Water",            10: "Rail",              11: "Road Surface",
-        12: "Overlap",         13: "Wire – Guard",      14: "Wire – Conductor",
-        15: "Transmission Tower", 16: "Wire Connector", 17: "Bridge Deck",
-        18: "High Point (Noise)", 19: "Overhead Structure", 20: "Ignored Ground",
-        21: "Snow",            22: "Temporal Exclusion",
-    };
 
     // Attributes rendered by a dedicated row (or deliberately hidden — see
     // the GPS-time note above). Everything else gets a generic row.
@@ -82,7 +73,7 @@
     position: fixed;
     top: 80px;
     right: 10px;
-    width: 290px;
+    width: 300px;
     display: flex;
     flex-direction: column;
     background: rgba(20, 20, 26, 0.62);
@@ -118,77 +109,32 @@
     padding: 12px;
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    transition: opacity 0.15s ease;
 }
-#pointInspector.pi-stale .pi-content { opacity: 0.5; }
+/* Cursor is off the cloud: the readout belongs to the last point, not the
+   one under the cursor. */
+#pointInspector.pi-stale .pi-readout { opacity: 0.6; }
 
-/* ── Empty state ─────────────────────────────────────────── */
+/* ── Empty hint ──────────────────────────────────────────── */
 .pi-empty {
     display: flex;
-    flex-direction: column;
     align-items: center;
-    gap: 8px;
-    padding: 14px 8px 10px;
-    text-align: center;
+    gap: 9px;
+    padding: 0 2px;
     color: #9a9aa6;
-    font-size: 12.5px;
-    line-height: 1.5;
+    font-size: 12px;
+    line-height: 1.45;
 }
-.pi-empty svg { opacity: 0.55; }
-.pi-empty strong { color: #e6e6ec; font-weight: 600; }
+.pi-empty svg { flex: 0 0 auto; opacity: 0.6; }
+.pi-empty b { color: #d6d6de; }
 #pointInspector.pi-has-point .pi-empty { display: none; }
 #pointInspector:not(.pi-has-point) .pi-readout { display: none; }
 
-.pi-readout { display: flex; flex-direction: column; gap: 10px; }
+.pi-readout { display: flex; flex-direction: column; gap: 10px; transition: opacity 0.15s ease; }
 
-/* ── Classification card ─────────────────────────────────── */
-.pi-class {
-    --pi-cls: 128 128 128;
-    display: flex;
-    align-items: center;
-    gap: 11px;
-    padding: 10px 11px;
-    border-radius: 10px;
-    background: linear-gradient(100deg, rgb(var(--pi-cls) / 0.24), rgb(var(--pi-cls) / 0.04) 75%);
-    border: 1px solid rgb(var(--pi-cls) / 0.38);
-    transition: background 0.2s ease, border-color 0.2s ease;
-}
-.pi-class-swatch {
-    flex: 0 0 auto;
-    width: 26px; height: 26px;
-    border-radius: 7px;
-    background: rgb(var(--pi-cls));
-    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.22), 0 2px 8px rgb(var(--pi-cls) / 0.45);
-    transition: background 0.2s ease;
-}
-.pi-class-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
-.pi-class-name {
-    font-size: 15px;
-    font-weight: 600;
-    color: #f7f7fb;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.pi-class-sub {
-    font-size: 10.5px;
-    font-weight: 600;
-    letter-spacing: 0.07em;
-    text-transform: uppercase;
-    color: #9a9aa6;
-}
-.pi-class-code {
-    flex: 0 0 auto;
-    min-width: 26px;
-    padding: 3px 7px;
-    border-radius: 6px;
-    background: rgba(0,0,0,0.3);
-    border: 1px solid rgba(255,255,255,0.1);
-    color: #d6d6de;
-    font: 600 12px ui-monospace, 'SFMono-Regular', Consolas, monospace;
-    text-align: center;
-}
+/* ── Classification ──────────────────────────────────────── */
+.pi-class { display: flex; flex-direction: column; gap: 6px; }
+.pi-class .cl-chip { height: 32px; padding-left: 5px; font-size: 13px; }
+.pi-class .cl-chip-code { min-width: 24px; height: 21px; line-height: 21px; font-size: 11px; }
 
 /* ── Section label ───────────────────────────────────────── */
 .pi-label {
@@ -225,7 +171,7 @@
     justify-content: space-between;
     gap: 10px;
     min-width: 0;
-    line-height: 19px;
+    line-height: 18px;
 }
 .pi-axis b { font-size: 10.5px; font-weight: 700; }
 .pi-axis-x b { color: #f87171; }
@@ -247,7 +193,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    min-height: 27px;
+    min-height: 24px;
     border-top: 1px solid rgba(255,255,255,0.055);
 }
 .pi-row:first-child { border-top: none; }
@@ -388,7 +334,7 @@
 `;
     (document.head || document.documentElement).appendChild(css);
 
-    const ICON_TARGET = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>`;
+    const ICON_TARGET = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>`;
     const ICON_LOCK   = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>`;
     const ICON_UNLOCK = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.5-2"/></svg>`;
     const ICON_COPY   = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`;
@@ -483,38 +429,14 @@
     // ══════════════════════════════════════════════════════════════
     //  Name / value resolution
     // ══════════════════════════════════════════════════════════════
-    const norm = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, "");
-
-    // "low point(noise)" → "Low Point(Noise)"
+    // "scan angle rank" → "Scan Angle Rank"
     const titleCase = (s) =>
         String(s).replace(/(^|[\s(\-\/_])([a-z])/g, (_, p, c) => p + c.toUpperCase());
 
-    /**
-     * viewer.classifications is what the renderer colours by (the brush
-     * syncs its editable list into it, lower-cased). Prefer the brush's
-     * original casing when it names the same class, then the viewer's name,
-     * then the ASPRS table.
-     */
+    // Class name and colour come from class_legend.js, which owns them.
     function resolveClass(code) {
-        const vc = viewer.classifications ? viewer.classifications[code] : null;
-        const brushList = (typeof CLASSIFICATIONS !== "undefined" && Array.isArray(CLASSIFICATIONS))
-            ? CLASSIFICATIONS : null;
-        const bc = brushList ? brushList.find((c) => c.value === code) : null;
-
-        let name;
-        if (vc && vc.name) {
-            name = (bc && norm(bc.name) === norm(vc.name)) ? bc.name : titleCase(vc.name);
-        } else if (bc) {
-            name = bc.name;
-        } else {
-            name = ASPRS_CLASSES[code] || (code >= 64 ? "User Defined" : "Reserved");
-        }
-
-        const def = viewer.classifications && viewer.classifications.DEFAULT;
-        const rgbaF = (vc && vc.color) || (def && def.color) || [0.5, 0.5, 0.5, 1];
-        const rgb = rgbaF.slice(0, 3).map((v) => Math.round(Math.max(0, Math.min(1, v)) * 255));
-
-        return { name, rgb };
+        if (window.ClassLegend) return window.ClassLegend.resolveClass(code);
+        return { name: "Class " + code, rgb: [128, 128, 128] };
     }
 
     function labelFor(attr) {
@@ -578,22 +500,15 @@
         const content = el("div", "pi-content");
 
         content.appendChild(el("div", "pi-empty",
-            `${ICON_TARGET}<div><strong>Hover over the point cloud</strong><br>
-             to inspect a point. Press <b>L</b> to lock it.</div>`));
+            `${ICON_TARGET}<span>Hover over the point cloud to inspect a point. <b>Click</b> to lock it.</span>`));
 
         const readout = el("div", "pi-readout");
 
-        // Classification card
+        // Classification (filled by renderClass)
         const cls = el("div", "pi-class");
-        cls.appendChild(el("span", "pi-class-swatch"));
-        const clsText = el("div", "pi-class-text");
-        const clsName = el("span", "pi-class-name");
-        clsText.appendChild(clsName);
-        clsText.appendChild(el("span", "pi-class-sub", "Classification"));
-        cls.appendChild(clsText);
-        const clsCode = el("span", "pi-class-code");
-        clsCode.title = "Classification code";
-        cls.appendChild(clsCode);
+        cls.appendChild(el("span", "pi-label", "Classification"));
+        const clsSlot = el("div");
+        cls.appendChild(clsSlot);
         readout.appendChild(cls);
 
         // Position (click to copy)
@@ -667,7 +582,8 @@
         panel.appendChild(footer);
 
         state.ui = {
-            cls, clsName, clsCode, axes, rows, statusText, copyBtn, lockBtn,
+            cls, clsSlot, axes, rows, statusText, copyBtn, lockBtn,
+            classCode: undefined,   // code the class chip was built for
             rowEls: {},
             lockShown: null,
         };
@@ -730,6 +646,34 @@
         }
     }
 
+    /** Class chip for the current point; rebuilt only when the code changes
+     *  (or the viewer's classes do — see refreshClass). */
+    function renderClass(code) {
+        const ui = state.ui;
+        if (ui.classCode === code) return;
+        ui.classCode = code;
+        ui.cls.style.display = code == null ? "none" : "";
+        ui.clsSlot.textContent = "";
+        if (code == null) return;
+
+        let chip;
+        if (window.ClassLegend) {
+            chip = window.ClassLegend.createChip(code);
+        } else {
+            chip = el("div", "cl-chip");
+            chip.textContent = "Class " + code;
+        }
+        chip.classList.add("cl-sel");
+        ui.clsSlot.appendChild(chip);
+    }
+
+    // Class names, colours or visibility changed: rebuild the chip
+    function refreshClass() {
+        if (!state.ui || !state.current) return;
+        state.ui.classCode = undefined;
+        render();
+    }
+
     // Rewrites a lone text node's data in place: a characterData change,
     // which panel_window_manager's observer doesn't listen for, so per-frame
     // readout updates don't make it re-run its neutralise/header pass.
@@ -754,17 +698,10 @@
 
         // Classification
         const code = scalar(point, "classification");
-        if (code != null) {
-            const c = resolveClass(code);
-            ui.cls.style.display = "";
-            ui.cls.style.setProperty("--pi-cls", c.rgb.join(" "));
-            setText(ui.clsName, c.name);
-            ui.clsName.title = c.name;
-            setText(ui.clsCode, String(code));
-            if (state.reticle) state.reticle.style.setProperty("--pi-dot", `rgb(${c.rgb.join(",")})`);
-        } else {
-            ui.cls.style.display = "none";
-            if (state.reticle) state.reticle.style.removeProperty("--pi-dot");
+        renderClass(code);
+        if (state.reticle) {
+            if (code != null) state.reticle.style.setProperty("--pi-dot", `rgb(${resolveClass(code).rgb.join(",")})`);
+            else state.reticle.style.removeProperty("--pi-dot");
         }
 
         // Position
@@ -829,10 +766,10 @@
         panel.classList.toggle("pi-stale", !state.locked && hasPoint && state.stale);
 
         let text;
-        if (state.locked) text = "Locked";
-        else if (!hasPoint) text = "Waiting for hover";
+        if (state.locked) text = "Locked · click to release";
+        else if (!hasPoint) text = "Hover the cloud · click to lock";
         else if (state.stale) text = "No point under cursor";
-        else text = "Live";
+        else text = "Live · click to lock";
         setText(ui.statusText, text);
 
         if (ui.lockBtn.disabled !== !hasPoint) ui.lockBtn.disabled = !hasPoint;
@@ -841,7 +778,9 @@
             ui.lockShown = state.locked;
             ui.lockBtn.classList.toggle("pi-on", state.locked);
             ui.lockBtn.innerHTML = (state.locked ? ICON_LOCK + "Locked" : ICON_UNLOCK + "Lock") + "<kbd>L</kbd>";
-            ui.lockBtn.title = state.locked ? "Unlock and follow the cursor (L)" : "Lock this point (L)";
+            ui.lockBtn.title = state.locked
+                ? "Release and follow the cursor (click the cloud, or L)"
+                : "Lock this point (click the cloud, or L)";
         }
 
         if (state.reticle) state.reticle.classList.toggle("pi-locked", state.locked);
@@ -858,6 +797,55 @@
         state.locked = !state.locked;
         updateStatus();
         if (!state.locked) schedulePick();   // resume from wherever the cursor is now
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  Click to lock / release
+    // ══════════════════════════════════════════════════════════════
+    // A plain left click on the cloud toggles the lock. Clicks that belong to
+    // something else are left alone: drags (orbit/pan), modifier clicks (Ctrl
+    // paints with the brush, Shift focuses oriented images), Potree tool
+    // insertions (measure, volume, zone positions — they attach a marker to
+    // the cursor or disable the input handler), and clicks on interactive
+    // scene objects such as 360 or oriented-image markers. That is decided at
+    // pointerdown, which fires before Potree's own mousedown handling.
+    let downAt = null;   // where a left press that may become a lock click began
+
+    function sceneWantsClick() {
+        const ih = viewer.inputHandler;
+        if (!ih) return false;
+        return ih.enabled === false ||
+               !!(ih.drag && ih.drag.object) ||
+               (Array.isArray(ih.hoveredElements) && ih.hoveredElements.length > 0);
+    }
+
+    function onCanvasPointerDown(e) {
+        const plain = e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey;
+        downAt = (plain && !sceneWantsClick()) ? { x: e.clientX, y: e.clientY } : null;
+    }
+
+    function onCanvasClick(e) {
+        const d = downAt;
+        downAt = null;
+        // detail > 1 is the second click of a double-click (Potree zooms on those)
+        if (!d || e.button !== 0 || e.detail > 1) return;
+        if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4) return;   // a drag
+
+        if (state.locked) {
+            state.locked = false;
+            state.pendingEvent = e;
+            updateStatus();
+            schedulePick();      // resume from the click position
+            return;
+        }
+
+        // Lock exactly what's under the click, not the last throttled hover pick
+        const hit = pickAt(e.clientX, e.clientY);
+        if (!hit) return;
+        state.current = hit;
+        state.stale = false;
+        state.locked = true;
+        render();
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -953,7 +941,12 @@
 
         canvas.addEventListener("mousemove", onCanvasMove);
         canvas.addEventListener("mouseleave", onCanvasLeave);
+        canvas.addEventListener("pointerdown", onCanvasPointerDown);
+        canvas.addEventListener("click", onCanvasClick);
         viewer.addEventListener("render.pass.end", updateReticle);
+        viewer.addEventListener("classifications_changed", refreshClass);
+        viewer.addEventListener("classification_visibility_changed", refreshClass);
+        announce(true);
     }
 
     function closePointInspector() {
@@ -963,7 +956,11 @@
         const canvas = viewer.renderer.domElement;
         canvas.removeEventListener("mousemove", onCanvasMove);
         canvas.removeEventListener("mouseleave", onCanvasLeave);
+        canvas.removeEventListener("pointerdown", onCanvasPointerDown);
+        canvas.removeEventListener("click", onCanvasClick);
         viewer.removeEventListener("render.pass.end", updateReticle);
+        viewer.removeEventListener("classifications_changed", refreshClass);
+        viewer.removeEventListener("classification_visibility_changed", refreshClass);
 
         if (state.reticle) state.reticle.remove();
         state.reticle = null;
@@ -971,10 +968,17 @@
         state.ui = null;
         state.current = null;
         state.pendingEvent = null;
+        downAt = null;
 
         // Let the window manager's frame fade out with the panel
         panel.classList.remove("open");
         setTimeout(() => panel.remove(), 200);
+        announce(false);
+    }
+
+    // Lets toolbar buttons etc. reflect the open state
+    function announce(open) {
+        document.dispatchEvent(new CustomEvent("point-inspector-changed", { detail: { open } }));
     }
 
     function togglePointInspector() {

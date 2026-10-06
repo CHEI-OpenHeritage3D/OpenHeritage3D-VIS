@@ -107,8 +107,8 @@ style.textContent += `
    like a proper button group inside a glassy pill strip. */
 
 .zone-io-container {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     gap: 6px;
     margin: 6px 0 2px;
     padding: 8px 10px;
@@ -118,7 +118,7 @@ style.textContent += `
 }
 
 .zone-io-container .close-btn {
-    flex: 1 1 auto;
+    width: 100%;
     margin: 0;
     padding: 7px 10px;
     font-size: 12px;
@@ -571,6 +571,18 @@ function toggleZoneSearchMenu() {
         openZoneForm();
     });
     ioContainer.appendChild(newZoneBtn);
+
+    const sceneConfigBtn = document.createElement("button");
+    sceneConfigBtn.textContent = "Scene Setup";
+    sceneConfigBtn.className = "close-btn";
+    sceneConfigBtn.addEventListener("click", () => {
+        toggleSceneSetup();
+    });
+    ioContainer.appendChild(sceneConfigBtn);
+
+    // zone_creation.js builds it; a cached copy from before it existed won't have it
+    const datasetImport = typeof createDatasetImportRow === "function" ? createDatasetImportRow() : null;
+    if (datasetImport) ioContainer.appendChild(datasetImport);
 
     panel.appendChild(ioContainer);
 

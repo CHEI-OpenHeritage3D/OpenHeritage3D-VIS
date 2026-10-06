@@ -38,6 +38,11 @@
 		opacity: 0.9;
 	}
 
+	#potree_toolbar img.active{
+		opacity: 1;
+		filter: brightness(2) drop-shadow(0 0 4px rgba(129, 140, 248, 0.95));
+	}
+
 	.potree_toolbar_separator{
 		background: white;
 		padding: 0px;
@@ -152,11 +157,11 @@
 					website: "https://openheritage3d.org",
 					websiteName: "OpenHeritage3D"
 				},
-				kvap: {
-					datasetPrefix: "https://pointcloud.ucsd.edu/archive_temp/oh3d_store/oh3d-vis/kvap_datasets/",
-					website: "https://kvap.digital-atlas.org",
-					websiteName: "KVAP"
-				},
+				// kvap: {
+				// 	datasetPrefix: "https://pointcloud.ucsd.edu/archive_temp/oh3d_store/oh3d-vis/kvap_datasets/",
+				// 	website: "https://kvap.digital-atlas.org",
+				// 	websiteName: "KVAP"
+				// },
 				oo3d: {
 					datasetPrefix: "https://pointcloud.ucsd.edu/archive_temp/oh3d_store/remote-vis/openocean3d_vis/",
 					website: "https://openocean3d.org",
@@ -238,53 +243,70 @@
 <script src="libs/custom//classification_entropy.js"></script>
 <script src="libs/custom/brush_world_export.js"></script>
 <script src="libs/custom/oriented_image_panel.js"></script>
+<script src="libs/custom/class_legend.js"></script>
 <script src="libs/custom/class_hover_picker.js"></script>
-	
-<script>
-		// Loads the config Script which loads pointclouds and other overriding settings
+<script src="libs/custom/scene_config.js"></script>
+<script src="libs/custom/scene_config_panel.js"></script>
 
-		//loads pointcloud from config
+<script>
+		// zones.json decides how the scene loads. A schema-2 file describes the
+		// whole scene (scene_config.js); an old-style file, or none, loads
+		// config.js as before.
+
 		// params = new URLSearchParams(document.location.search);
 		window.doi = params.get("doi");
 		window.configURL = datasetPrefix + doi + "/potree/config.js";
 
 		window.acceptedTerms = params.get("acceptedTerms");
-		
-		const newScript = document.createElement("script");
-		newScript.src = configURL;
-		
+
 		window.zoneURL = datasetPrefix + doi + "/potree/zones.json";
 		window.classificationURL = datasetPrefix + doi + "/potree/classification_edits.gz";
 
-
-		// tries to load config
-		newScript.onload = () => {
-			if(window.loadDefaultConfigFirst){
-				loadAllAvailableDataTypes(window.doi);
-			}
-			// after pointclouds have loaded
-			console.log("Config loaded:", configURL);
-			setTitle();
-			
-			initZones();
-
-			// loadMarker360s();
-		};
-
-		newScript.onerror = () => {
-			console.error("Failed to load config:", configURL);
-			console.log("loading default config");
-			loadAllAvailableDataTypes(window.doi);
-			setTitle();
-
-			initZones();
-		};
-
-		
 		setAutoSwitchState(true);
 
-		document.body.appendChild(newScript);
+		// Browsers cache libs/custom/*.js heuristically, so this page can meet a zone_creation.js
+		// from before fetchZonesFile() existed; that one can only load config.js, which it still can.
+		const zonesFile = typeof fetchZonesFile === "function" ? fetchZonesFile(window.zoneURL) : Promise.resolve(null);
+		zonesFile.then(data => {
+			if (typeof isSceneConfigFile === "function" && isSceneConfigFile(data)) {
+				console.log("Scene loaded from zones.json (schema 2):", zoneURL);
+				setTitle();
+				initSceneFromConfig(data, zoneURL).catch(err => console.error("Failed to set up the scene from zones.json:", err));
+			} else {
+				loadConfigScript();
+			}
+		});
 
+		// Loads the config Script which loads pointclouds and other overriding settings
+		function loadConfigScript() {
+			const newScript = document.createElement("script");
+			newScript.src = configURL;
+
+			// tries to load config
+			newScript.onload = () => {
+				if(window.loadDefaultConfigFirst){
+					loadAllAvailableDataTypes(window.doi);
+				}
+				// after pointclouds have loaded
+				console.log("Config loaded:", configURL);
+				setTitle();
+
+				initZones();
+
+				// loadMarker360s();
+			};
+
+			newScript.onerror = () => {
+				console.error("Failed to load config:", configURL);
+				console.log("loading default config");
+				loadAllAvailableDataTypes(window.doi);
+				setTitle();
+
+				initZones();
+			};
+
+			document.body.appendChild(newScript);
+		}
 
 	</script>
 	<script>
@@ -407,7 +429,7 @@ toggleBtn.addEventListener("click", () => {
 				Measure
 			</div>
 			<div>
-				<img name="action_measure_point" src="${Potree.resourcePath}/icons/point.svg" class="annotation-action-icon" style="width: 2em; height: auto;"/>
+				<img name="action_point_inspector" src="images/icons/point-inspector.svg" class="annotation-action-icon" title="Point Inspector (I)" style="width: 2em; height: auto;"/>
 				<img name="action_measure_distance" src="${Potree.resourcePath}/icons/distance.svg" class="annotation-action-icon" style="width: 2em; height: auto;"/>
 				<img name="action_measure_height" src="${Potree.resourcePath}/icons/height.svg" class="annotation-action-icon" style="width: 2em; height: auto;"/>
 				<img name="action_reset_tools" src="${Potree.resourcePath}/icons/reset_tools.svg" class="annotation-action-icon" style="width: 2em; height: auto;"/>
@@ -482,16 +504,12 @@ toggleBtn.addEventListener("click", () => {
 
 
 	{ // MEASURE
-		elToolbar.find("img[name=action_measure_point]").click( () => {
-			const measurement = viewer.measuringTool.startInsertion({
-				showDistances: false,
-				showAngles: false,
-				showCoordinates: true,
-				showArea: false,
-				closed: true,
-				maxMarkers: 1,
-				name: 'Point'
-			});
+		elToolbar.find("img[name=action_point_inspector]").click( () => togglePointInspector() );
+
+		// Light the button while the inspector is open, however it was toggled
+		// (this button, the I key, or the Tools menu).
+		document.addEventListener("point-inspector-changed", (e) => {
+			elToolbar.find("img[name=action_point_inspector]").toggleClass("active", e.detail.open);
 		});
 
 		elToolbar.find("img[name=action_measure_distance]").click( () => {
