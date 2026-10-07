@@ -23,7 +23,7 @@ window.annotationsTemp = [];
 
 // Zone class (structure for each zone)
 class Zone {
-    constructor(name, parent, priority, pointclouds = [], boundingBoxes = [], annotations = [], layerMaps = [], marker360s = [], beacon, description, background, isDefault = false, orientedImagesHandlers = []) {
+    constructor(name, parent, priority, pointclouds = [], boundingBoxes = [], annotations = [], layerMaps = [], marker360s = [], beacon, description, background, isDefault = false, orientedImagesHandlers = [], doi = null, vtype = null) {
         this.name = name;                    // name of the zone
         this.pointclouds = pointclouds;      // list of pointcloud IDs/names
         this.boundingBoxes = boundingBoxes;  // list of bounding box objects
@@ -37,6 +37,8 @@ class Zone {
         this.background = background;
         this.isDefault = isDefault;
         this.orientedImagesHandlers = orientedImagesHandlers; // list of orientedImagesHandler
+        this.doi = doi;                      // dataset the zone was imported from (DOI + archive vtype),
+        this.vtype = vtype;                  // null for the scene's own zones
     }
 }
 
@@ -1612,6 +1614,7 @@ function openZoneForm(zone = null) {
                 oihs
             );
             window.zones.push(newZone);
+            inheritSceneDataset([newZone]);
             resetZoneOrientedImages(newZone, getZoneVisibility(newZone));
         }
 
@@ -2142,6 +2145,8 @@ function exportZonesToJSON() {
         return;
     }
 
+    // Picks up zones made since the scene loaded, and a DOI set in Scene Setup since.
+    inheritSceneDataset();
     const zonesData = zonesToJSON();
     const fileData = sceneConfig
         ? { schema: 2, sceneConfig: sceneConfig.toJSON(), zones: zonesData }
@@ -2194,6 +2199,8 @@ function zonesToJSON() {
         beacon: (z.beacon) ? {cameraPosition: z.beacon.cameraPosition, cameraTarget: z.beacon.cameraTarget, position: z.beacon.position} : null,
         background: z.background || 'gradient',
         isDefault: z.isDefault || false,
+        doi: z.doi ?? null,
+        vtype: z.vtype ?? null,
         orientedImagesHandlers: (z.orientedImagesHandlers
             || (z.orientedImagesHandler ? [z.orientedImagesHandler] : [])
         ).map(h => ({
@@ -2209,6 +2216,18 @@ function resolvePointCloudByName(name) {
     if(!name) return null;
     if (!viewer || !viewer.scene || !viewer.scene.pointclouds) return null;
     return viewer.scene.pointclouds.find(pc => pc.name.trim() === name.trim()) || null;
+}
+
+// A zone of the scene's own dataset takes the sceneConfig's doi and vtype. Only empty values are
+// filled in: a zone that names another dataset keeps it, and a vtype is only filled in beside the
+// scene's own doi, so a zone never ends up pointing at another dataset in this scene's archive.
+function inheritSceneDataset(zones = window.zones) {
+    const sc = window.sceneConfig;
+    if (!sc?.doi) return;
+    for (const zone of zones) {
+        if (zone.doi == null) zone.doi = sc.doi;
+        if (zone.vtype == null && zone.doi === sc.doi) zone.vtype = sc.vtype;
+    }
 }
 
 // The zone list of a zones.json: the file itself in the old format, its
@@ -2292,7 +2311,7 @@ function zonesFromJSON(list) {
 
 
         const orientedHandlers = buildOrientedImagesHandlers(z);
-        return new Zone(z.name, z.parent, Number(z.priority), pcs, boxes, annotations, layerMaps, marker360s, z.beacon || null, z.description || ``, z.background || "gradient", z.isDefault || false, orientedHandlers);
+        return new Zone(z.name, z.parent, Number(z.priority), pcs, boxes, annotations, layerMaps, marker360s, z.beacon || null, z.description || ``, z.background || "gradient", z.isDefault || false, orientedHandlers, z.doi ?? null, z.vtype ?? null);
     });
 }
 
@@ -2331,18 +2350,21 @@ function importZonesFromJSON() {
  * Import the zones.json of a dataset in one of the archives (index.html's
  * VTYPE_CONFIG), found the way index.html finds a scene's own.
  */
-async function importZonesFromDataset(vtype, doi) {
+async function importZonesFromDataset(vtype, doi, name = null) {
     const url = new URL(VTYPE_CONFIG[vtype].datasetPrefix + doi + "/potree/zones.json", window.location.href).href;
     const data = await fetchZonesFile(url);
     if (!data) throw new Error(`no zones.json could be read from ${url}`);
-    return importZonesData(data, { vtype, doi });
+    // A typed DOI can still have a name in the archive's project list.
+    if (!name) name = (await fetchProjectList(vtype))?.find(p => p.doi === doi)?.name || null;
+    return importZonesData(data, { vtype, doi, name });
 }
 
 /**
  * Merge zones.json data (old-style array or schema 2) into the scene. When
  * some names are already taken, the user picks whether the imported zones
- * replace those or are skipped. `dataset` ({ vtype, doi }) is where the file
- * came from, if not this scene's own dataset. Returns a summary for the user.
+ * replace those or are skipped. `dataset` ({ vtype, doi, name }) is where the
+ * file came from, if not this scene's own dataset: its zones are then tagged
+ * with it and gathered under one zone for it. Returns a summary for the user.
  */
 async function importZonesData(importedData, dataset = null) {
     const list = zonesArrayOf(importedData);
@@ -2355,6 +2377,29 @@ async function importZonesData(importedData, dataset = null) {
         "OK: replace them with the imported ones.\n" +
         "Cancel: keep the existing ones and skip these.");
     const incoming = list.filter(z => replace || !existing.has(z.name));
+    const skipped = list.length - incoming.length;
+
+    // From a dataset: every imported zone gets its doi and vtype (one that already names a dataset keeps
+    // its own), and the top-level ones go under a zone for the dataset, reused when it's imported again.
+    let groupName = null, groupCreated = false;
+    if (dataset && incoming.length) {
+        groupName = dataset.name ? `${dataset.name} (${dataset.doi})` : dataset.doi;
+        const names = new Set(list.map(z => z.name));
+        for (let i = 0; i < incoming.length; i++) {
+            const z = incoming[i] = { ...incoming[i] };
+            z.doi = z.doi ?? dataset.doi;
+            z.vtype = z.vtype ?? dataset.vtype;
+            if (!z.parent || z.parent === "none" || !names.has(z.parent)) z.parent = groupName;
+        }
+        if (!existing.has(groupName)) {
+            groupCreated = true;
+            incoming.unshift({
+                name: groupName, priority: 1, parent: null, pointclouds: [], boundingBoxes: [], layerMaps: [],
+                marker360s: [], annotations: [], description: "", beacon: null, background: "gradient",
+                isDefault: false, doi: dataset.doi, vtype: dataset.vtype,
+            });
+        }
+    }
 
     // A schema-2 file brings its own clouds. They go in first: zones match clouds by name.
     const schema2 = typeof isSceneConfigFile === "function" && isSceneConfigFile(importedData);
@@ -2379,8 +2424,7 @@ async function importZonesData(importedData, dataset = null) {
     initAddedZones(added);
     for (const zone of reshow) setZoneVisibility(zone, true);
 
-    const skipped = list.length - incoming.length;
-    const parts = [`${added.length - replaced} added`];
+    const parts = [`${added.length - replaced - (groupCreated ? 1 : 0)} added` + (groupName ? ` under "${groupName}"` : "")];
     if (replaced) parts.push(`${replaced} replaced`);
     if (skipped) parts.push(`${skipped} skipped`);
     if (cloudIds.length) parts.push(`${cloudIds.length} point cloud${cloudIds.length === 1 ? "" : "s"} added`);
@@ -2553,7 +2597,7 @@ function createDatasetImportRow(onImported = null) {
         btn.disabled = true;
         btn.textContent = "Importing…";
         try {
-            const summary = await importZonesFromDataset(archive.value, doi);
+            const summary = await importZonesFromDataset(archive.value, doi, project?.name);
             alert(`Zones imported from ${project ? `${project.name} (${doi})` : doi}: ${summary}`);
             if (onImported) onImported();
         } catch (err) {
@@ -3207,11 +3251,19 @@ function updateZoneVisibility() {
 }
 function setZoneBackground(zone){
     if(zone.background === "cesium"){
+        // cesium_basemap.js draws the basemap when the page loads it; a scene without a projection
+        // for it has nothing to show through, so the zone gets the gradient instead.
+        if (window.CesiumBasemap && !CesiumBasemap.setActive(true)) {
+            window.cesiumActive = false;
+            viewer.setBackground("gradient");
+            return;
+        }
         viewer.setBackground("");
         window.cesiumActive = true;
     }
     else {
         window.cesiumActive = false;
+        if (window.CesiumBasemap) CesiumBasemap.setActive(false);
         if(!zone.background) zone.background = "gradient";
         viewer.setBackground(zone.background);
     }

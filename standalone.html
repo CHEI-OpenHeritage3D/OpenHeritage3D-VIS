@@ -217,6 +217,7 @@
 <script src="libs/custom/class_hover_picker.js"></script>
 <script src="libs/custom/scene_config.js"></script>
 <script src="libs/custom/scene_config_panel.js"></script>
+<script src="libs/custom/cesium_basemap.js"></script>
 
 	<script>
 
@@ -228,6 +229,8 @@
 
 			window.animateBeacons();
 			window.animateMarker360s();
+			// Cesium basemap behind the clouds, while a zone's background is "cesium" (cesium_basemap.js)
+			if (window.CesiumBasemap) CesiumBasemap.render();
 		}
 
         requestAnimationFrame(loop);

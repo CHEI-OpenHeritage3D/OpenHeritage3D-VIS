@@ -206,6 +206,8 @@
 .sc-hint { margin: 0; color: #8b8b98; font-size: 11.5px; line-height: 1.4; }
 .sc-error { color: #f87171; font-size: 12px; line-height: 1.35; }
 .sc-error:empty { display: none; }
+.sc-ok { color: #86efac; }
+.sc-textarea { resize: vertical; min-height: 52px; line-height: 1.35; }
 
 /* ── Start zones ──────────────────────────────────────────── */
 .sc-checks { max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; }
@@ -255,6 +257,9 @@
     gap: 8px;
 }
 .sc-cap-val { color: #c9c9d6; font-size: 12px; overflow-wrap: anywhere; }
+.sc-range-row { display: flex; align-items: center; gap: 8px; }
+.sc-range { flex: 1 1 auto; min-width: 0; margin: 0; accent-color: #6366f1; cursor: pointer; }
+.sc-range-val { flex: 0 0 auto; width: 34px; text-align: right; color: #c9c9d6; }
 .sc-flash { animation: scFlash 0.9s ease; }
 @keyframes scFlash { from { color: #a5b4fc; } to { color: #c9c9d6; } }
 .sc-sub {
@@ -328,13 +333,15 @@
             content.replaceChildren(emptyState());
             footer.replaceChildren();
         } else {
-            content.replaceChildren(
+            content.replaceChildren(...[
                 datasetSection(sc),
                 viewerSection(sc),
                 cameraSection(sc),
+                cesiumSection(sc),
                 startZonesSection(sc),
                 editsSection(sc),
-                cloudsSection(sc));
+                cloudsSection(sc),
+            ].filter(Boolean));
             footer.replaceChildren(
                 el("button", { class: "sc-btn sc-primary", onclick: () => exportZonesToJSON() }, "Export zones.json"),
                 el("p", { class: "sc-hint" },
@@ -416,14 +423,32 @@
             class: "sc-input", type: "number", placeholder: "default", value: v[key] ?? "", ...attrs,
             onchange: e => set(key, e.target.value === "" ? undefined : Number(e.target.value)),
         });
-        const setEDL = value => {
-            if (value === "") {
-                if (v.edl) delete v.edl.enabled;
+        const setEDL = (key, value) => {
+            if (value === undefined) {
+                if (v.edl) delete v.edl[key];
                 if (v.edl && !Object.keys(v.edl).length) delete v.edl;
             } else {
-                v.edl = { ...v.edl, enabled: value === "true" };
+                v.edl = { ...v.edl, [key]: value };
             }
             sc.applyViewerSettings(viewer);
+        };
+        // Until moved, an EDL slider shows what the viewer is using. Dragging previews through that one
+        // setter; letting go applies everything, which also syncs Potree's own sidebar.
+        const edlSlider = (key, min, max, getter, setter) => {
+            const out = el("span", { class: "sc-range-val sc-mono" });
+            const input = el("input", {
+                type: "range", class: "sc-range", min, max, step: 0.01,
+                oninput: e => {
+                    const value = Number(e.target.value);
+                    v.edl = { ...v.edl, [key]: value };
+                    viewer[setter](value);
+                    out.textContent = value.toFixed(2);
+                },
+                onchange: () => sc.applyViewerSettings(viewer),
+            });
+            input.value = v.edl?.[key] ?? viewer[getter]();
+            out.textContent = Number(input.value).toFixed(2);
+            return el("div", { class: "sc-range-row" }, input, out);
         };
 
         return section("viewer", "Viewer", null,
@@ -432,7 +457,17 @@
             row("Point budget", number("pointBudget", { min: 0, step: 100000 })),
             row("FOV", number("fov", { min: 20, max: 100, step: 1 })),
             row("Background", select(BACKGROUNDS, v.background, e => set("background", e.target.value || undefined))),
-            row("EDL", select([["true", "On"], ["false", "Off"]], v.edl?.enabled, e => setEDL(e.target.value))),
+            row("EDL", select([["true", "On"], ["false", "Off"]], v.edl?.enabled, e => {
+                setEDL("enabled", e.target.value === "" ? undefined : e.target.value === "true");
+                render();       // the EDL sliders only show while EDL is on
+            })),
+            v.edl?.enabled === true && [
+                row("EDL radius", edlSlider("radius", 1, 4, "getEDLRadius", "setEDLRadius")),
+                row("EDL strength", edlSlider("strength", 0, 5, "getEDLStrength", "setEDLStrength")),
+                row("EDL opacity", edlSlider("opacity", 0, 1, "getEDLOpacity", "setEDLOpacity")),
+            ],
+            row("Splat Quality", select([["false", "Standard (Default)"], ["true", "High Quality"]], String(!!v.hqSplats),
+                e => set("hqSplats", e.target.value === "true"), false)),
             row("Clip task", select(CLIP_TASKS, v.clipTask,
                 e => set("clipTask", e.target.value === "" ? undefined : Number(e.target.value)))),
             el("p", { class: "sc-hint" }, "Blank fields use the viewer's defaults."));
@@ -449,6 +484,74 @@
                 el("button", { class: "sc-btn sc-primary", onclick: () => { sc.captureCamera(viewer); render(); } }, "Use current view"),
                 el("button", { class: "sc-btn", disabled: !cam, onclick: () => moveCameraTo(cam.position, cam.target) }, "Go to"),
                 el("button", { class: "sc-btn", disabled: !cam, onclick: () => { sc.camera = null; render(); } }, "Clear")));
+    }
+
+    // ── Cesium basemap ───────────────────────────────────────────
+    // sceneConfig.cesium, for zones whose background is "cesium". Pages without cesium_basemap.js skip it.
+    function cesiumSection(sc) {
+        if (!window.CesiumBasemap) return null;
+        const c = sc.cesium;
+        const value = key => c[key] ?? CesiumBasemap.DEFAULTS[key];
+
+        // Any change rebuilds the Cesium viewer if it is showing.
+        const set = (key, v, redraw = false) => {
+            if (v === undefined || v === "") delete c[key];
+            else c[key] = v;
+            CesiumBasemap.reconfigure();
+            if (redraw) render();
+        };
+        const choice = (key, options, redraw = false) =>
+            select(options, String(value(key)), e => {
+                const v = e.target.value;
+                set(key, v === "true" ? true : v === "false" ? false : v, redraw);
+            }, false);
+        const onOff = (key, redraw) => choice(key, [["true", "On"], ["false", "Off"]], redraw);
+
+        const check = CesiumBasemap.describeProjection(c.projection);
+        const deg = (v, pos, neg) => `${Math.abs(v).toFixed(4)}° ${v >= 0 ? pos : neg}`;
+        const projectionStatus = !c.projection
+            ? el("p", { class: "sc-hint" }, "The point clouds' coordinate system as a proj4 string (epsg.io lists one for every EPSG code).")
+            : check.ok
+                ? el("p", { class: "sc-hint sc-ok" }, check.lat === undefined ? "Reads fine."
+                    : `Scene centre: ${deg(check.lat, "N", "S")}, ${deg(check.lon, "E", "W")}`)
+                : el("div", { class: "sc-error" }, check.error);
+
+        const previewing = CesiumBasemap.previewing;
+        const previewBtn = el("button", {
+            class: "sc-btn" + (previewing ? " sc-primary" : ""), disabled: !check.ok,
+            onclick: () => { CesiumBasemap.preview(!previewing); render(); },
+        }, previewing ? "Stop preview" : "Preview");
+
+        const users = (window.zones || []).filter(z => z.background === "cesium").map(z => z.name);
+
+        return section("cesium", "Cesium Basemap", c.projection ? (check.ok ? "set" : "check") : null,
+            row("Projection", el("textarea", {
+                class: "sc-input sc-mono sc-textarea", rows: 3, spellcheck: false, value: c.projection ?? "",
+                placeholder: "+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs",
+                onchange: e => set("projection", e.target.value.trim(), true),
+            })),
+            projectionStatus,
+            row("Height offset", el("input", {
+                class: "sc-input", type: "number", step: 0.1, value: c.heightOffset ?? "", placeholder: "0 m",
+                title: "Metres added to the point clouds' heights to match Cesium's, which are ellipsoidal.",
+                onchange: e => set("heightOffset", e.target.value === "" ? undefined : Number(e.target.value)),
+            })),
+            row("3D Tiles", choice("photorealisticTiles", [["true", "Google Photorealistic"], ["false", "Off"]])),
+            row("Globe", onOff("globe", true)),
+            value("globe") && [
+                row("Imagery", choice("imagery", [["ion", "Cesium World Imagery"], ["osm", "OpenStreetMap"], ["none", "None"]])),
+                row("Terrain", onOff("terrain")),
+            ],
+            row("Sky", onOff("skyAtmosphere")),
+            row("Ion token", el("input", {
+                class: "sc-input sc-mono", type: "text", spellcheck: false, value: c.ionToken ?? "", placeholder: "built-in",
+                onchange: e => set("ionToken", e.target.value.trim() || undefined),
+            })),
+            el("div", { class: "sc-actions" }, previewBtn),
+            CesiumBasemap.error && el("div", { class: "sc-error" }, CesiumBasemap.error),
+            el("p", { class: "sc-hint" }, users.length
+                ? `Shown behind the point clouds in: ${users.join(", ")}.`
+                : "Shown behind the point clouds in zones whose background is Cesium (Zone Management ▸ Edit ▸ Hierarchy & Behavior). No zone uses it yet."));
     }
 
     // ── Start zones ──────────────────────────────────────────────
@@ -542,6 +645,22 @@
         const matVal = el("span", { class: "sc-cap-val" }, materialSummary(entry.material));
         const tfVal = el("span", { class: "sc-cap-val" }, transformSummary(entry.transform));
 
+        // Opacity is applied to the cloud as the slider moves. Unset, it shows the cloud's current value.
+        const opacityOut = el("span", { class: "sc-range-val sc-mono" });
+        const opacity = el("input", {
+            type: "range", class: "sc-range", min: 0, max: 1, step: 0.01,
+            oninput: e => {
+                entry.opacity = Number(e.target.value);
+                if (pc) pc.material.opacity = entry.opacity;
+                showOpacity();
+            },
+        });
+        const showOpacity = () => {
+            opacity.value = entry.opacity ?? pc?.material.opacity ?? 1;
+            opacityOut.textContent = Number(opacity.value).toFixed(2);
+        };
+        showOpacity();
+
         return el("div", { class: "sc-pc" },
             el("div", { class: "sc-pc-head" },
                 el("input", {
@@ -561,13 +680,14 @@
                     if (pc) pc.userData.label = label || id;
                 },
             })),
+            row("Opacity", el("div", { class: "sc-range-row" }, opacity, opacityOut)),
             row("URL", el("input", {
                 class: "sc-input sc-mono", value: entry.url || "", placeholder: `${id}/metadata.json`,
                 title: "Relative URLs load from the dataset folder. Takes effect the next time the scene loads.",
                 onchange: e => { entry.url = e.target.value.trim() ? sc.relativeURL(e.target.value.trim()) : ""; render(); },
             })),
             !entry.url && el("div", { class: "sc-error" }, "No URL: this cloud won't load from zones.json."),
-            capture("Material", matVal, pc, () => { sc.captureMaterial(id); flash(matVal, materialSummary(entry.material)); }),
+            capture("Material", matVal, pc, () => { sc.captureMaterial(id); flash(matVal, materialSummary(entry.material)); showOpacity(); }),
             capture("Transform", tfVal, pc, () => { sc.captureTransform(id); flash(tfVal, transformSummary(entry.transform)); }));
     }
 
@@ -701,9 +821,10 @@
         return el("div", { class: "sc-row" }, el("span", { class: "sc-key" }, label), control);
     }
 
-    function select(options, value, onchange) {
+    // With `blank`, a first "default" option stands for leaving the setting out.
+    function select(options, value, onchange, blank = true) {
         return el("select", { class: "sc-select", onchange },
-            el("option", { value: "" }, "default"),
+            blank && el("option", { value: "" }, "default"),
             options.map(([v, text]) => el("option", { value: String(v), selected: value !== undefined && String(v) === String(value) }, text)));
     }
 
@@ -730,7 +851,6 @@
             m.sizeType,
             m.size !== undefined && `size ${m.size}`,
             m.minSize !== undefined && `min ${m.minSize}`,
-            m.opacity !== undefined && `opacity ${fmt(m.opacity)}`,
             m.matcap && m.matcap.replace(/\.\w+$/, ""),
             m.ranges?.intensity && `intensity ${m.ranges.intensity.map(fmt).join("–")}`,
             m.ranges?.elevation && `elevation ${m.ranges.elevation.map(fmt).join("–")}`,

@@ -1,7 +1,7 @@
 // SceneConfig — the `sceneConfig` block of a schema-2 zones.json.
 //
 // A schema-2 zones.json is a complete description of a scene:
-//   { "schema": 2, "sceneConfig": { vtype, doi, viewer, camera, startZones, classificationEdits, pointclouds }, "zones": [...] }
+//   { "schema": 2, "sceneConfig": { vtype, doi, viewer, camera, cesium, startZones, classificationEdits, pointclouds }, "zones": [...] }
 // sceneConfig says what gets loaded and how it looks by default; zones group those clouds and refer to
 // them by id. The id is the key in `pointclouds`, normally the cloud's folder name, and becomes
 // pointcloud.name at runtime. It never changes once the cloud is added; `label` is free text.
@@ -18,10 +18,18 @@ class SceneConfig {
         this.doi = json.doi || null;
         this.viewerSettings = json.viewer || {};
         this.camera = json.camera || null;               // { position: [x,y,z], target: [x,y,z] }
+        this.cesium = json.cesium || {};                 // basemap for zones with a "cesium" background (cesium_basemap.js)
         this.startZones = json.startZones || [];
         this.classificationEdits = json.classificationEdits || [];
-        this.pointclouds = json.pointclouds || {};       // id -> { label, url, visible, transform, material }
+        this.pointclouds = json.pointclouds || {};       // id -> { label, url, visible, opacity, transform, material }
         this.loaded = new Map();                         // id -> Potree point cloud
+
+        // Opacity was briefly stored inside `material`; it sits beside `visible` now.
+        for (const entry of Object.values(this.pointclouds)) {
+            if (entry.material?.opacity === undefined) continue;
+            if (entry.opacity === undefined) entry.opacity = entry.material.opacity;
+            delete entry.material.opacity;
+        }
     }
 
     // Snapshot of the live scene, for scenes that were loaded from config.js.
@@ -100,6 +108,18 @@ class SceneConfig {
         if (v.fov !== undefined) viewer.setFOV(v.fov);
         if (v.background !== undefined) viewer.setBackground(v.background);
         if (v.edl?.enabled !== undefined) viewer.setEDLEnabled(v.edl.enabled);
+        if (v.edl?.radius !== undefined) viewer.setEDLRadius(v.edl.radius);
+        if (v.edl?.strength !== undefined) viewer.setEDLStrength(v.edl.strength);
+        if (v.edl?.opacity !== undefined) {
+            viewer.setEDLOpacity(v.edl.opacity);
+            // Potree's sidebar slider reads this once when it is built and never listens for changes
+            if (window.$) $("#sldEDLOpacity.ui-slider").slider("value", v.edl.opacity);
+        }
+        if (v.hqSplats !== undefined) {
+            viewer.useHQ = v.hqSplats;
+            // A plain flag, so the sidebar's Splat Quality buttons are synced by clicking the right one
+            if (window.$) $(`#splat_quality_options input[value=${v.hqSplats ? "hq" : "standard"}]`).trigger("click");
+        }
         if (v.clipTask !== undefined) viewer.setClipTask(v.clipTask);
     }
 
@@ -154,7 +174,7 @@ class SceneConfig {
     adopt(pc) {
         const id = pc.name;
         const url = pc.userData.sourceURL || pc.pcoGeometry?.url;   // COPC geometries don't keep their URL
-        this.pointclouds[id] = { label: pc.userData.label || id, url: url ? this.relativeURL(url) : "", visible: pc.visible };
+        this.pointclouds[id] = { label: pc.userData.label || id, url: url ? this.relativeURL(url) : "", visible: pc.visible, opacity: 1 };
         SceneConfig.baseOffset(pc);
         this.captureTransform(id, pc);
         this.captureMaterial(id, pc);
@@ -208,6 +228,7 @@ class SceneConfig {
         SceneConfig.baseOffset(pc);
         this.applyTransform(pc, entry.transform);
         this.applyMaterial(pc, entry.material);
+        if (entry.opacity !== undefined) pc.material.opacity = entry.opacity;
         pc.visible = entry.visible !== false;
 
         if (!viewer.scene.pointclouds.includes(pc)) viewer.scene.addPointCloud(pc);
@@ -247,7 +268,6 @@ class SceneConfig {
         if (m.sizeType) mat.pointSizeType = Potree.PointSizeType[m.sizeType.toUpperCase()];
         if (m.size !== undefined) mat.size = m.size;
         if (m.minSize !== undefined) mat.minSize = m.minSize;
-        if (m.opacity !== undefined) mat.opacity = m.opacity;
         if (m.rgb?.gamma !== undefined) mat.rgbGamma = m.rgb.gamma;
         if (m.rgb?.brightness !== undefined) mat.rgbBrightness = m.rgb.brightness;
         if (m.rgb?.contrast !== undefined) mat.rgbContrast = m.rgb.contrast;
@@ -261,7 +281,14 @@ class SceneConfig {
         v.pointBudget = viewer.getPointBudget();
         v.fov = viewer.getFOV();
         v.background = viewer.getBackground();
-        v.edl = { ...v.edl, enabled: viewer.getEDLEnabled() };
+        v.edl = {
+            ...v.edl,
+            enabled: viewer.getEDLEnabled(),
+            radius: roundTo(viewer.getEDLRadius(), 2),
+            strength: roundTo(viewer.getEDLStrength(), 2),
+            opacity: roundTo(viewer.getEDLOpacity(), 2),
+        };
+        v.hqSplats = !!viewer.useHQ;
         v.clipTask = viewer.getClipTask();
     }
 
@@ -289,7 +316,8 @@ class SceneConfig {
         else delete entry.transform;
     }
 
-    // The reverse of applyMaterial. Values still at Potree's default are left out.
+    // The reverse of applyMaterial. Values still at Potree's default are left out. Opacity is recorded
+    // too, always, but on the entry beside `visible` rather than in `material`.
     captureMaterial(id, pc = this.loaded.get(id)) {
         const mat = pc.material;
         const def = SceneConfig.defaultMaterial();
@@ -321,13 +349,13 @@ class SceneConfig {
         }
         if (!mat.color.equals(def.color)) m.color = roundTo(mat.color.toArray(), 4);
         if (mat.matcap !== def.matcap) m.matcap = mat.matcap;
-        if (mat.opacity !== def.opacity) m.opacity = roundTo(mat.opacity, 3);
 
         if (mat.rgbGamma !== def.rgbGamma || mat.rgbBrightness !== def.rgbBrightness || mat.rgbContrast !== def.rgbContrast) {
             m.rgb = { gamma: mat.rgbGamma, brightness: mat.rgbBrightness, contrast: mat.rgbContrast };
         }
 
         this.pointclouds[id].material = m;
+        this.pointclouds[id].opacity = roundTo(mat.opacity, 3);
     }
 
     static defaultMaterial() {
@@ -344,6 +372,7 @@ class SceneConfig {
         if (this.doi) out.doi = this.doi;
         if (Object.keys(this.viewerSettings).length) out.viewer = this.viewerSettings;
         if (this.camera) out.camera = this.camera;
+        if (Object.keys(this.cesium).length) out.cesium = this.cesium;
         out.startZones = this.startZones;
         out.classificationEdits = this.classificationEdits.filter(Boolean);
         out.pointclouds = this.pointclouds;
@@ -354,7 +383,7 @@ class SceneConfig {
     }
 }
 
-SceneConfig.KEYS = ["vtype", "doi", "viewer", "camera", "startZones", "classificationEdits", "pointclouds"];
+SceneConfig.KEYS = ["vtype", "doi", "viewer", "camera", "cesium", "startZones", "classificationEdits", "pointclouds"];
 
 function roundTo(v, digits) {
     const f = 10 ** digits;
@@ -392,6 +421,8 @@ async function initSceneFromConfig(data, zonesURL) {
     } else {
         createZones();
     }
+    // The dataset's own zones belong to it; inheritSceneDataset() only fills in zones that don't say.
+    if (typeof inheritSceneDataset === "function") inheritSceneDataset();
 
     // Switching a zone on applies its own background, and every zone has one ("gradient" unless set),
     // so the file's background is re-applied to open the scene as it was captured. A Cesium zone keeps its own.
