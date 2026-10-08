@@ -20,8 +20,12 @@
  *   does nothing unless a cesium background is on.
  *
  * Notes:
- *   • Heights: Cesium positions are ellipsoidal, so data in orthometric
- *     heights (e.g. NAVD88) needs `heightOffset` to sit on the 3D Tiles.
+ *   • Heights: Cesium positions are ellipsoidal, so clouds in orthometric
+ *     heights (above sea level) sit under the 3D Tiles by the local geoid
+ *     height (about +45 m in Florence, +47 m in northern Sardinia) and slide
+ *     against them as the view moves. `heightOffset` lifts them by that much;
+ *     measureHeightOffset() (Scene Setup ▸ Match basemap) finds the value.
+ *     The Florence atlas does the same by hand in each cloud's position.
  *   • window.toMap / window.toScene / window.cesiumViewer are set for scripts
  *     written against the ALERTCalifornia page (load_sensor_nodes.js etc.).
  */
@@ -54,6 +58,9 @@
     let listening = false;
 
     const settings = () => ({ ...DEFAULTS, ...(window.sceneConfig?.cesium || {}) });
+
+    // The backgrounds Potree paints; anything else ("none", "cesium", "") leaves its canvas see-through.
+    const PAINTED = ["skybox", "gradient", "black", "white"];
 
     // ── Projection ───────────────────────────────────────────────
 
@@ -205,7 +212,7 @@
         if (listening || !window.viewer) return;
         listening = true;
         viewer.addEventListener("background_changed", () => {
-            if (active && viewer.getBackground() !== "") {
+            if (active && PAINTED.includes(viewer.getBackground())) {
                 setActive(false);
                 window.cesiumActive = false;
                 previewBackground = null;
@@ -213,12 +220,18 @@
         });
     }
 
-    // Rebuild with the current settings (Scene Setup calls this after a change).
+    // Rebuild with the current settings (Scene Setup calls this after a change). A zone on screen that
+    // asks for the basemap gets it back once the settings work again, e.g. after a projection is fixed.
     function reconfigure() {
+        const wanted = active || [...(window.newVisibleZones || [])].some(z => z.background === "cesium");
         destroy();
         transform = null;
         error = null;
-        if (active && !setActive(true)) {
+        if (!wanted) return;
+        if (setActive(true)) {
+            window.cesiumActive = true;
+            viewer.setBackground("none");
+        } else {
             setActive(false);
             window.cesiumActive = false;
             viewer.setBackground(previewBackground || "gradient");
@@ -229,9 +242,9 @@
     function preview(on) {
         if (on) {
             if (!setActive(true)) return false;
-            if (viewer.getBackground() !== "") previewBackground = viewer.getBackground();
+            if (PAINTED.includes(viewer.getBackground())) previewBackground = viewer.getBackground();
             window.cesiumActive = true;
-            viewer.setBackground("");
+            viewer.setBackground("none");
             return true;
         }
         const back = previewBackground || "gradient";
@@ -240,6 +253,64 @@
         window.cesiumActive = false;
         viewer.setBackground(back);
         return true;
+    }
+
+    // ── Height offset ────────────────────────────────────────────
+
+    // World positions of up to `max` cloud points Potree is drawing in the middle of the view, where
+    // the basemap is loaded in most detail.
+    function visibleCloudPoints(max) {
+        const camera = viewer.scene.getActiveCamera();
+        const nodes = viewer.scene.pointclouds.filter(pc => pc.visible).flatMap(pc => pc.visibleNodes || []);
+        const perNode = Math.max(1, Math.ceil(max / Math.max(1, nodes.length)));
+        const out = [];
+        for (const node of nodes) {
+            const pos = node.geometryNode?.geometry?.attributes?.position?.array;
+            if (!pos) continue;
+            const step = Math.max(1, Math.floor(pos.length / 3 / perNode)) * 3;
+            for (let i = 0; i < pos.length && out.length < max; i += step) {
+                const p = new THREE.Vector3(pos[i], pos[i + 1], pos[i + 2]).applyMatrix4(node.sceneNode.matrixWorld);
+                const ndc = p.clone().project(camera);
+                if (Math.abs(ndc.x) <= 0.8 && Math.abs(ndc.y) <= 0.8 && ndc.z <= 1) out.push(p);
+            }
+        }
+        return out;
+    }
+
+    // The heightOffset that puts the clouds on the basemap, from the gaps between the basemap's surface
+    // (3D Tiles, or the globe's terrain) and the cloud points in view. Where both show bare ground or
+    // water the gaps agree; trees and buildings on one side only (often, with historic clouds) scatter
+    // them. So the result is the middle of the 4 m band holding the most gaps, and `agreeing` is the
+    // share of points in that band.
+    async function measureHeightOffset() {
+        if (!active || !cesiumViewer) throw new Error("Show the basemap first (Preview, or a zone with a Cesium background).");
+        const s = settings();
+        const points = visibleCloudPoints(600);
+        if (points.length < 10) throw new Error("Not enough of the point clouds is in view.");
+        const places = points.map(p => {
+            const [lon, lat] = transform.toMap.forward([p.x, p.y]);
+            return Cesium.Cartographic.fromDegrees(lon, lat);
+        });
+
+        let surface;
+        if (s.photorealisticTiles && cesiumViewer.scene.primitives.length) {
+            surface = await cesiumViewer.scene.sampleHeightMostDetailed(places);
+        } else if (s.globe && s.terrain) {
+            surface = await Cesium.sampleTerrainMostDetailed(cesiumViewer.terrainProvider, places);
+        } else {
+            throw new Error("Nothing to measure against: needs the 3D Tiles, or the globe with terrain.");
+        }
+
+        const gaps = surface.map((c, i) => c?.height === undefined ? NaN : c.height - points[i].z).filter(isFinite).sort((a, b) => a - b);
+        if (gaps.length < 10) throw new Error("The basemap hasn't loaded under the clouds yet. Try again in a moment.");
+        const BAND = 4;
+        let count = 0, start = 0;
+        for (let i = 0, j = 0; i < gaps.length; i++) {
+            while (gaps[i] - gaps[j] > BAND) j++;
+            if (i - j + 1 > count) { count = i - j + 1; start = j; }
+        }
+        const offset = gaps[start + (count >> 1)];
+        return { offset: Math.round(offset * 10) / 10, samples: gaps.length, agreeing: Math.round(100 * count / gaps.length) };
     }
 
     // ── Every frame ──────────────────────────────────────────────
@@ -285,6 +356,7 @@
         reconfigure,
         preview,
         describeProjection,
+        measureHeightOffset,
         get active() { return active; },
         get previewing() { return active && previewBackground !== null; },
         get error() { return error; },

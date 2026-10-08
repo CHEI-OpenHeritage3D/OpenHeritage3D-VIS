@@ -37,7 +37,26 @@
     const BACKGROUNDS = [["gradient", "Gradient"], ["black", "Black"], ["white", "White"], ["skybox", "Skybox"]];
     const CLIP_TASKS = [[0, "None"], [1, "Highlight"], [2, "Show inside"], [3, "Show outside"]];
 
+    // Projections Scene Setup offers without typing proj4; anything else is a custom string.
+    const CALIFORNIA_ALBERS = "+proj=aea +lat_0=0 +lon_0=-120 +lat_1=34 +lat_2=40.5 +x_0=0 +y_0=-4000000 +datum=NAD83 +units=m +no_defs +type=crs";
+    const utmProjection = (zone, south) =>
+        `+proj=utm +zone=${zone}${south ? " +south" : ""} +ellps=WGS84 +datum=WGS84 +units=m +no_defs`;
+
+    // Which of those a stored projection is: { kind: "utm", zone, south }, { kind: "albers" },
+    // { kind: "custom" }, or { kind: null } when there is none.
+    function projectionKindOf(projection) {
+        const p = (projection || "").trim().replace(/\s+/g, " ");
+        const utm = p.match(/^\+proj=utm \+zone=(\d{1,2})( \+south)? \+ellps=WGS84 \+datum=WGS84 \+units=m \+no_defs$/);
+        if (utm) return { kind: "utm", zone: Number(utm[1]), south: !!utm[2] };
+        if (p === CALIFORNIA_ALBERS) return { kind: "albers" };
+        return { kind: p ? "custom" : null };
+    }
+
     // UI state that outlives a re-render
+    let heightMatch = null;     // last "Match basemap" result or error, shown under Height offset
+    // The Projection select's state that the stored string can't tell: "custom" picked for a preset,
+    // or "utm" picked before a zone is typed; a custom string kept while another kind is picked.
+    let projectionUI = { sc: null, kind: null, custom: "", error: null };
     const openSections = new Set(["dataset", "viewer", "camera", "startZones", "edits", "pointclouds"]);
     const addForm = { url: "", id: "", idEdited: false, busy: false, error: "" };
 
@@ -208,6 +227,7 @@
 .sc-error:empty { display: none; }
 .sc-ok { color: #86efac; }
 .sc-textarea { resize: vertical; min-height: 52px; line-height: 1.35; }
+.sc-proj { font-size: 11px; overflow-wrap: anywhere; }
 
 /* ── Start zones ──────────────────────────────────────────── */
 .sc-checks { max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; }
@@ -493,11 +513,12 @@
         const c = sc.cesium;
         const value = key => c[key] ?? CesiumBasemap.DEFAULTS[key];
 
-        // Any change rebuilds the Cesium viewer if it is showing.
+        // Changes rebuild the Cesium viewer if it is showing; the height offset is read every frame instead.
         const set = (key, v, redraw = false) => {
+            const before = c[key];
             if (v === undefined || v === "") delete c[key];
             else c[key] = v;
-            CesiumBasemap.reconfigure();
+            if (key !== "heightOffset" && c[key] !== before) CesiumBasemap.reconfigure();
             if (redraw) render();
         };
         const choice = (key, options, redraw = false) =>
@@ -507,10 +528,58 @@
             }, false);
         const onOff = (key, redraw) => choice(key, [["true", "On"], ["false", "Off"]], redraw);
 
+        // ── Projection: a UTM zone, California Albers, or any proj4 string ──
+        if (projectionUI.sc !== sc) projectionUI = { sc, kind: null, custom: "", error: null };
+        const parsed = projectionKindOf(c.projection);
+        const kind = projectionUI.kind === "custom" ? "custom" : (parsed.kind ?? projectionUI.kind ?? "utm");
+
+        const pickKind = k => {
+            if (parsed.kind === "custom") projectionUI.custom = c.projection;
+            projectionUI.kind = k;
+            projectionUI.error = null;
+            if (k === "albers") set("projection", CALIFORNIA_ALBERS, true);
+            else if (k === "utm") set("projection", parsed.kind === "utm" ? c.projection : undefined, true);
+            // custom starts from what is there, so a preset can be tweaked
+            else set("projection", (parsed.kind === null && projectionUI.custom) || c.projection, true);
+        };
+
+        const zoneInput = el("input", {
+            class: "sc-input", type: "number", min: 1, max: 60, step: 1, placeholder: "1–60",
+            value: parsed.kind === "utm" ? parsed.zone : "",
+            onchange: () => setUtm(),
+        });
+        const hemisphere = select([["N", "North"], ["S", "South"]], parsed.south ? "S" : "N", () => setUtm(), false);
+        hemisphere.style.cssText = "width: auto; flex: 0 0 auto;";
+        const setUtm = () => {
+            const zone = Number(zoneInput.value);
+            if (zoneInput.value === "") { projectionUI.error = null; set("projection", undefined, true); return; }
+            if (!Number.isInteger(zone) || zone < 1 || zone > 60) {
+                projectionUI.error = "UTM zones run from 1 to 60.";
+                render();
+                return;
+            }
+            projectionUI.error = null;
+            set("projection", utmProjection(zone, hemisphere.value === "S"), true);
+        };
+
+        const projectionInput = kind === "utm"
+            ? row("UTM zone", el("div", { class: "sc-range-row" }, zoneInput, hemisphere))
+            : kind === "custom"
+                ? row("proj4", el("textarea", {
+                    class: "sc-input sc-mono sc-textarea", rows: 3, spellcheck: false, value: c.projection ?? "",
+                    placeholder: "+proj=utm +zone=32 +ellps=WGS84 +datum=WGS84 +units=m +no_defs",
+                    onchange: e => { projectionUI.custom = e.target.value.trim(); set("projection", e.target.value.trim(), true); },
+                }))
+                : null;
+
         const check = CesiumBasemap.describeProjection(c.projection);
         const deg = (v, pos, neg) => `${Math.abs(v).toFixed(4)}° ${v >= 0 ? pos : neg}`;
-        const projectionStatus = !c.projection
-            ? el("p", { class: "sc-hint" }, "The point clouds' coordinate system as a proj4 string (epsg.io lists one for every EPSG code).")
+        const projectionStatus = projectionUI.error
+            ? el("div", { class: "sc-error" }, projectionUI.error)
+            : !c.projection
+            ? el("p", { class: "sc-hint" }, kind === "utm"
+                ? "The UTM zone the point clouds' coordinates are in (32 for most of Italy, 10 or 11 for California)."
+                : "The point clouds' coordinate system as a proj4 string (epsg.io lists one for every EPSG code).")
             : check.ok
                 ? el("p", { class: "sc-hint sc-ok" }, check.lat === undefined ? "Reads fine."
                     : `Scene centre: ${deg(check.lat, "N", "S")}, ${deg(check.lon, "E", "W")}`)
@@ -525,17 +594,38 @@
         const users = (window.zones || []).filter(z => z.background === "cesium").map(z => z.name);
 
         return section("cesium", "Cesium Basemap", c.projection ? (check.ok ? "set" : "check") : null,
-            row("Projection", el("textarea", {
-                class: "sc-input sc-mono sc-textarea", rows: 3, spellcheck: false, value: c.projection ?? "",
-                placeholder: "+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs",
-                onchange: e => set("projection", e.target.value.trim(), true),
-            })),
+            row("Projection", select([["utm", "UTM zone (WGS84)"], ["albers", "California Albers (NAD83)"], ["custom", "Custom proj4 string"]],
+                kind, e => pickKind(e.target.value), false)),
+            projectionInput,
+            kind !== "custom" && c.projection && el("p", { class: "sc-hint sc-mono sc-proj" }, c.projection),
             projectionStatus,
-            row("Height offset", el("input", {
-                class: "sc-input", type: "number", step: 0.1, value: c.heightOffset ?? "", placeholder: "0 m",
-                title: "Metres added to the point clouds' heights to match Cesium's, which are ellipsoidal.",
-                onchange: e => set("heightOffset", e.target.value === "" ? undefined : Number(e.target.value)),
-            })),
+            row("Height offset", el("div", { class: "sc-range-row" },
+                el("input", {
+                    class: "sc-input", type: "number", step: 0.1, value: c.heightOffset ?? "", placeholder: "0 m",
+                    title: "Metres added to the point clouds' heights to match Cesium's, which are ellipsoidal.",
+                    onchange: e => { heightMatch = null; set("heightOffset", e.target.value === "" ? undefined : Number(e.target.value)); },
+                }),
+                el("button", {
+                    class: "sc-btn", disabled: !CesiumBasemap.active,
+                    title: "Measure the gap between the basemap's surface and the point clouds in view, and use it",
+                    onclick: async e => {
+                        e.target.disabled = true;
+                        e.target.textContent = "Measuring…";
+                        try {
+                            const m = await CesiumBasemap.measureHeightOffset();
+                            heightMatch = { ok: true, text: `Measured ${m.offset >= 0 ? "+" : ""}${m.offset} m from ${m.samples} points; ${m.agreeing}% of them agree within 4 m.` };
+                            set("heightOffset", m.offset);
+                        } catch (err) {
+                            heightMatch = { ok: false, text: err.message };
+                        }
+                        render();
+                    },
+                }, "Match basemap"))),
+            heightMatch
+                ? el(heightMatch.ok ? "p" : "div", { class: heightMatch.ok ? "sc-hint sc-ok" : "sc-error" }, heightMatch.text)
+                : el("p", { class: "sc-hint" }, "Clouds in heights above sea level sit under the basemap by the local geoid height " +
+                    "(about +45 m in Florence) and slide against it as the view moves. With the basemap showing, Match basemap " +
+                    "measures it from the clouds in view; it is most accurate from a few hundred metres up."),
             row("3D Tiles", choice("photorealisticTiles", [["true", "Google Photorealistic"], ["false", "Off"]])),
             row("Globe", onOff("globe", true)),
             value("globe") && [

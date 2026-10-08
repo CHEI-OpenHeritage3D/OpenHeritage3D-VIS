@@ -3258,7 +3258,9 @@ function setZoneBackground(zone){
             viewer.setBackground("gradient");
             return;
         }
-        viewer.setBackground("");
+        // "none": Potree draws nothing behind the clouds. Unlike "", its sidebar can select it
+        // (an empty value made Sidebar.initAppearance throw when the GUI loaded afterwards).
+        viewer.setBackground("none");
         window.cesiumActive = true;
     }
     else {
