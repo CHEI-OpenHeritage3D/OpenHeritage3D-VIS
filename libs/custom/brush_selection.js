@@ -1110,21 +1110,64 @@ function switchPCMaterial() {
 // ══════════════════════════════════════════════════════════════
 
 /**
- * Push window.brushState.classBlend into the composite weights of every
- * currently visible pointcloud. t=0 is pure RGB, t=1 is pure classification;
- * the other composite channels are zeroed so the two stay complementary.
+ * Push window.brushState.classBlend into every currently visible pointcloud.
+ * t=0 is the cloud's default attribute from sceneConfig (RGB when it has no
+ * entry), t=1 is pure classification, and in between the composite attribute
+ * mixes the two so their weights always sum to 1.
  */
 function applyClassBlendToVisiblePointclouds() {
     const t = window.brushState.classBlend;
     for (const pc of viewer.scene.pointclouds) {
         if (!pc.visible) continue;
-        pc.material.activeAttributeName = "composite";
-        pc.material.weightRGB = 1 - t;
-        pc.material.weightClassification = t;
-        pc.material.weightIntensity = 0;
-        pc.material.weightElevation = 0;
-        pc.material.weightReturnNumber = 0;
-        pc.material.weightSourceID = 0;
+        const m = window.sceneConfig?.pointclouds[pc.name]?.material || {};
+        const attribute = m.attribute || "rgba";
+        const mat = pc.material;
+
+        // At 0% the cloud goes back to exactly its configured attribute and weights, since
+        // composite can't draw every attribute ("color", "intensity gradient", extra attributes).
+        if (t === 0) {
+            for (const [key, prop] of Object.entries(CLASS_BLEND_WEIGHTS)) {
+                mat[prop] = m.weights?.[key] ?? CLASS_BLEND_DEFAULT_WEIGHTS[key] ?? 0;
+            }
+            mat.activeAttributeName = attribute;
+            continue;
+        }
+
+        const base = classBlendBaseWeights(attribute, m.weights);
+        for (const [key, prop] of Object.entries(CLASS_BLEND_WEIGHTS)) mat[prop] = (1 - t) * (base[key] || 0);
+        mat.weightClassification += t;
+        mat.activeAttributeName = "composite";
+    }
+}
+
+// sceneConfig material.weights key -> PointCloudMaterial property. Same as SceneConfig.WEIGHTS, kept
+// here because some pages load this file without scene_config.js.
+const CLASS_BLEND_WEIGHTS = {
+    rgb: "weightRGB", intensity: "weightIntensity", elevation: "weightElevation",
+    classification: "weightClassification", returnNumber: "weightReturnNumber", sourceID: "weightSourceID",
+};
+const CLASS_BLEND_DEFAULT_WEIGHTS = { rgb: 1 };     // Potree's; every other weight starts at 0
+
+// Composite weights, keyed like CLASS_BLEND_WEIGHTS and summing to 1, that draw `attribute` on its
+// own. Composite has no channel for "color", "intensity gradient" or extra attributes, so those
+// blend from RGB instead.
+function classBlendBaseWeights(attribute, weights) {
+    switch (attribute) {
+        case "intensity":      return { intensity: 1 };
+        case "elevation":      return { elevation: 1 };
+        case "classification": return { classification: 1 };
+        case "return number":  return { returnNumber: 1 };
+        case "source id":      return { sourceID: 1 };
+        case "composite": {
+            // The configured mix, or Potree's default weights when the config left them out.
+            const w = Object.fromEntries(Object.keys(CLASS_BLEND_WEIGHTS)
+                .map(key => [key, Number(weights?.[key] ?? CLASS_BLEND_DEFAULT_WEIGHTS[key] ?? 0)]));
+            const sum = Object.values(w).reduce((a, b) => a + b, 0);
+            if (sum <= 0) return { rgb: 1 };
+            for (const key in w) w[key] /= sum;
+            return w;
+        }
+        default:               return { rgb: 1 };
     }
 }
 
