@@ -510,6 +510,7 @@
 
     // ── Cesium basemap ───────────────────────────────────────────
     // sceneConfig.cesium, for zones whose background is "cesium". Pages without cesium_basemap.js skip it.
+    let previousBackgrounds = new Map();   // zone → background before "Cesium as default for all zones"
     function cesiumSection(sc) {
         if (!window.CesiumBasemap) return null;
         const c = sc.cesium;
@@ -593,7 +594,27 @@
             onclick: () => { CesiumBasemap.preview(!previewing); render(); },
         }, previewing ? "Stop preview" : "Preview");
 
-        const users = (window.zones || []).filter(z => z.background === "cesium").map(z => z.name);
+        const allZones = window.zones || [];
+        const users = allZones.filter(z => z.background === "cesium").map(z => z.name);
+
+        // Sets every zone's background to Cesium; unticking puts back what each zone had.
+        const allCesium = allZones.length > 0 && users.length === allZones.length;
+        const defaultAll = el("label", { class: "sc-check", title: "Sets every zone's background to Cesium" },
+            el("input", {
+                type: "checkbox", checked: allCesium, disabled: !allZones.length,
+                onchange: e => {
+                    if (e.target.checked) {
+                        previousBackgrounds = new Map(allZones.map(z => [z, z.background]));
+                        allZones.forEach(z => { z.background = "cesium"; });
+                    } else {
+                        allZones.forEach(z => { z.background = previousBackgrounds.get(z) ?? undefined; });
+                        previousBackgrounds = new Map();
+                    }
+                    CesiumBasemap.reconfigure();
+                    render();
+                },
+            }),
+            "Cesium as default for all zones");
 
         return section("cesium", "Cesium Basemap", c.projection ? (check.ok ? "set" : "check") : null,
             row("Projection", select([["utm", "UTM zone (WGS84)"], ["albers", "California Albers (NAD83)"], ["custom", "Custom proj4 string"]],
@@ -639,6 +660,7 @@
                 class: "sc-input sc-mono", type: "text", spellcheck: false, value: c.ionToken ?? "", placeholder: "built-in",
                 onchange: e => set("ionToken", e.target.value.trim() || undefined),
             })),
+            defaultAll,
             el("div", { class: "sc-actions" }, previewBtn),
             CesiumBasemap.error && el("div", { class: "sc-error" }, CesiumBasemap.error),
             el("p", { class: "sc-hint" }, users.length
