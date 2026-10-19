@@ -184,6 +184,17 @@
 
 			document.title = window.websiteName + " | Potree Viewer";
 
+			{
+				let faviconLink = document.querySelector("link[rel~='icon']");
+				if (!faviconLink) {
+					faviconLink = document.createElement("link");
+					faviconLink.rel = "icon";
+					document.head.appendChild(faviconLink);
+				}
+				faviconLink.type = "image/x-icon";
+				faviconLink.href = cfg.website ? `${cfg.website}/favicon.ico` : "images/favicon.ico";
+			}
+
 			
 
 			// Creates Viewer
@@ -234,7 +245,6 @@
 <script src="libs/custom/marker_360.js"></script>
 <script type="module" src="libs/custom/marker_360_image.js"></script>
 <script src="libs/custom/layer_map.js"></script>
-<script src="libs/custom/default_config.js"></script>
 <script src="libs/custom/default_zone.js"></script>
 <script src="libs/custom/viewer_state_retainer.js"></script>
 <script src="libs/custom/zone_beacon_og.js"></script>
@@ -251,8 +261,9 @@
 
 <script>
 		// zones.json decides how the scene loads. A schema-2 file describes the
-		// whole scene (scene_config.js); an old-style file, or none, loads
-		// config.js as before.
+		// whole scene (scene_config.js). Otherwise config.js loads the clouds as
+		// before, and a dataset without one gets every cloud in its potree/
+		// folder (default_zone.js).
 
 		// params = new URLSearchParams(document.location.search);
 		window.doi = params.get("doi");
@@ -274,36 +285,40 @@
 				setTitle();
 				initSceneFromConfig(data, zoneURL).catch(err => console.error("Failed to set up the scene from zones.json:", err));
 			} else {
-				loadConfigScript();
+				loadConfigScript(data);
 			}
 		});
 
-		// Loads the config Script which loads pointclouds and other overriding settings
-		function loadConfigScript() {
+		// Every cloud in the dataset's potree/ folder (default_zone.js). A default_zone.js cached from
+		// before initDefaultScene() can only wait for clouds that never come, but zones can still be imported.
+		function loadDefaultScene(zonesData, keepCamera) {
+			if (typeof initDefaultScene !== "function") return initZones();
+			initDefaultScene(zonesData, keepCamera).catch(err => console.error("Failed to set up the default scene:", err));
+		}
+
+		// Loads the config Script which loads pointclouds and other overriding settings.
+		// zonesData: an old-style zones.json, or null when the dataset has none.
+		function loadConfigScript(zonesData) {
 			const newScript = document.createElement("script");
 			newScript.src = configURL;
 
 			// tries to load config
 			newScript.onload = () => {
-				if(window.loadDefaultConfigFirst){
-					loadAllAvailableDataTypes(window.doi);
-				}
-				// after pointclouds have loaded
 				console.log("Config loaded:", configURL);
 				setTitle();
 
-				initZones();
+				// A config.js can ask for the dataset's own clouds and only add to them (it has
+				// placed the camera already); otherwise it has loaded the clouds itself.
+				if (window.loadDefaultConfigFirst) loadDefaultScene(zonesData, true);
+				else initZones();
 
 				// loadMarker360s();
 			};
 
 			newScript.onerror = () => {
-				console.error("Failed to load config:", configURL);
-				console.log("loading default config");
-				loadAllAvailableDataTypes(window.doi);
+				console.log("No config.js; loading every point cloud in", configURL.replace(/config\.js$/, ""));
 				setTitle();
-
-				initZones();
+				loadDefaultScene(zonesData, false);
 			};
 
 			document.body.appendChild(newScript);

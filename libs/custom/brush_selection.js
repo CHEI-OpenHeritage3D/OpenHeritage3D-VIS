@@ -1049,7 +1049,6 @@ function updateMaterialMenuOnStart(){
 }
 
 function setPCMaterial(material) {
-
     if(material.toLowerCase() === "classification"){
         for(const pointcloud of viewer.scene.pointclouds){
             pointcloud.material.activeAttributeName = "classification";
@@ -3648,7 +3647,7 @@ const HELP_GROUPS = [
             { keys: ["Q"],                  desc: "Shrink the brush radius" },
             { keys: ["E"],                  desc: "Grow the brush radius" },
             { keys: ["Ctrl/Cmd", "Scroll"], desc: "Resize the brush mid-stroke" },
-            { keys: ["W"],                  desc: "Cycle RGB / classification blend" },
+            { keys: ["C"],                  desc: "Cycle RGB / classification blend" },
             { keys: ["1", "9"], sep: "–",   desc: "Switch the paint classification (first 9 classes)" },
         ],
     },
@@ -3670,7 +3669,7 @@ const HELP_GROUPS = [
             { keys: ["←", "→"], sep: "/", desc: "Previous / next photo" },
             { keys: ["Space"],          desc: "Hold to peek at the cloud behind" },
             { keys: ["[", "]"], sep: "/", desc: "Nudge photo opacity down / up" },
-            { keys: ["W"],              desc: "Cycle photo opacity, in photo view" },
+            { keys: ["C"],              desc: "Cycle photo opacity, in photo view" },
         ],
     },
     {
@@ -3686,7 +3685,7 @@ const HELP_GROUPS = [
 
 // Which tint each key wears on the diagram; anything absent stays dim.
 const HELP_KEY_GROUP = {
-    "Z": "brush", "Q": "brush", "E": "brush", "W": "brush",
+    "Z": "brush", "Q": "brush", "E": "brush", "C": "brush",
     "Ctrl": "paint", "Shift": "paint",
     "Esc": "image", "[": "image", "]": "image",
     "Space": "image", "←": "image", "→": "image",
@@ -4299,7 +4298,7 @@ function openBrushPanel() {
 
     const blendLabel = document.createElement("div");
     blendLabel.className = "brush-label";
-    blendLabel.innerHTML = 'RGB / Classification Blend <span class="brush-hotkey">W</span>';
+    blendLabel.innerHTML = 'RGB / Classification Blend <span class="brush-hotkey">C</span>';
     blendSection.appendChild(blendLabel);
 
     const blendSliderRow = document.createElement("div");
@@ -5095,10 +5094,12 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         }
 
-        // W also drives oriented-image opacity while a photo is focused
-        // (oriented_image_panel.js) — only cycle the RGB/classification
-        // blend when that mode isn't active, so the two never fight.
-        if ((e.key === 'w' || e.key === 'W') &&
+        // C also drives opacity in oriented-image mode (oriented_image_panel.js)
+        // and the 360 viewers — the RGB/classification blend only cycles with
+        // the brush active and neither of those up, so the two never fight.
+        if (brushState.active && (e.key === 'c' || e.key === 'C') &&
+            !e.ctrlKey && !e.metaKey && !e.altKey &&
+            !window.in360View &&
             !(window.orientedImageState && window.orientedImageState.controls)) {
             toggleClassBlendCycle();
         }

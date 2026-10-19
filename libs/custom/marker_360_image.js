@@ -467,8 +467,8 @@ function buildOpacityControl() {
 
     const label = document.createElement('span');
     label.className = 'psv-oi-opacity-label';
-    label.innerHTML = 'Opacity <span class="psv-oi-key">W</span>';
-    label.title = 'Cycle panorama opacity: 100% / 50% / 0% (W)';
+    label.innerHTML = 'Opacity <span class="psv-oi-key">C</span>';
+    label.title = 'Cycle panorama opacity: 100% / 50% / 0% (C)';
 
     wrap.appendChild(label);
     wrap.appendChild(opacityEl);
@@ -623,16 +623,16 @@ function update360NavButtons(psv) {
 //    ← / →          previous / next image in the zone
 //    Space (hold)   "peek" — momentarily clear the panorama
 //    [ / ]          nudge opacity down / up
-//    W              cycle opacity: 100% -> 50% -> 0% -> 50% -> 100% ...
+//    C              cycle opacity: 100% -> 50% -> 0% -> 50% -> 100% ...
 //
 //  Bound in the CAPTURE phase and stopped there, so while the 360 viewer is
 //  up these keys never reach the handlers underneath: Potree's InputHandler
 //  (#photo360 lives inside #potree_render_area, so keys bubble into it),
-//  the brush's own W binding, and PSV's arrow-key rotation in fullscreen.
+//  the brush's own C binding, and PSV's arrow-key rotation in fullscreen.
 // ══════════════════════════════════════════════════════════════
 
 const kb360 = {
-    opacityToggleDir: -1,   // -1 = W is heading toward 0%, 1 = heading toward 100%
+    opacityToggleDir: -1,   // -1 = C is heading toward 0%, 1 = heading toward 100%
     peeking: false,
     peekPrevOpacity: 1.0,
 };
@@ -697,8 +697,8 @@ document.addEventListener('keydown', (e) => {
         case 'ArrowRight': navigate360(1);                        break;
         case '[':        set360Opacity(get360Opacity() - 0.1);    break;
         case ']':        set360Opacity(get360Opacity() + 0.1);    break;
-        case 'w':
-        case 'W':        toggle360OpacityCycle();                 break;
+        case 'c':
+        case 'C':        toggle360OpacityCycle();                 break;
         case ' ':        startPeek360();                          break;
         default:         handled = false;
     }

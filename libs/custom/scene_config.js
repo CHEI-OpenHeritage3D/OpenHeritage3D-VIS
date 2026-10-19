@@ -121,6 +121,14 @@ class SceneConfig {
             if (window.$) $(`#splat_quality_options input[value=${v.hqSplats ? "hq" : "standard"}]`).trigger("click");
         }
         if (v.clipTask !== undefined) viewer.setClipTask(v.clipTask);
+        // Shown in a cloud's material panel (Elevation and Extra Attribute), but Potree keeps one for the viewer
+        const repeat = Potree.ElevationGradientRepeat[v.gradientRepeat?.toUpperCase()];
+        if (repeat !== undefined) {
+            viewer.setElevationGradientRepeat(repeat);
+            // the material panel reads it once when it is built; sync it if one is open
+            const name = v.gradientRepeat.toUpperCase();
+            if (window.$) $(`#gradient_repeat_option input[value=${name}], #extra_gradient_repeat_option input[value=${name}]`).trigger("click");
+        }
     }
 
     applyCamera(viewer) {
@@ -258,8 +266,11 @@ class SceneConfig {
     applyMaterial(pc, m) {
         if (!m) return;
         const mat = pc.material;
-        if (m.ranges?.intensity) mat.intensityRange = m.ranges.intensity;
-        if (m.ranges?.elevation) mat.elevationRange = m.ranges.elevation;
+        for (const [name, range] of Object.entries(m.ranges || {})) {
+            if (name === "intensity") mat.intensityRange = range;
+            else if (name === "elevation") mat.elevationRange = range;
+            else mat.setRange(name, range);         // an extra attribute's, by attribute name
+        }
         if (typeof m.gradient === "string") mat.gradient = Potree.Gradients[m.gradient.toUpperCase()] || mat.gradient;
         else if (m.gradient) mat.gradient = m.gradient.map(([t, c]) => [t, new THREE.Color(...c)]);
         if (m.color) mat.color = new THREE.Color(...m.color);
@@ -268,9 +279,15 @@ class SceneConfig {
         if (m.sizeType) mat.pointSizeType = Potree.PointSizeType[m.sizeType.toUpperCase()];
         if (m.size !== undefined) mat.size = m.size;
         if (m.minSize !== undefined) mat.minSize = m.minSize;
-        if (m.rgb?.gamma !== undefined) mat.rgbGamma = m.rgb.gamma;
-        if (m.rgb?.brightness !== undefined) mat.rgbBrightness = m.rgb.brightness;
-        if (m.rgb?.contrast !== undefined) mat.rgbContrast = m.rgb.contrast;
+        if (m.backfaceCulling !== undefined) mat.backfaceCulling = m.backfaceCulling;
+        for (const group of SceneConfig.GBC_GROUPS) {
+            for (const part of ["gamma", "brightness", "contrast"]) {
+                if (m[group]?.[part] !== undefined) mat[gbcProperty(group, part)] = m[group][part];
+            }
+        }
+        for (const [key, prop] of Object.entries(SceneConfig.WEIGHTS)) {
+            if (m.weights?.[key] !== undefined) mat[prop] = m.weights[key];
+        }
         if (m.attribute) mat.activeAttributeName = m.attribute;
     }
 
@@ -290,6 +307,9 @@ class SceneConfig {
         };
         v.hqSplats = !!viewer.useHQ;
         v.clipTask = viewer.getClipTask();
+        const repeat = Object.keys(Potree.ElevationGradientRepeat)
+            .find(k => Potree.ElevationGradientRepeat[k] === viewer.elevationGradientRepeat);
+        if (repeat) v.gradientRepeat = repeat.toLowerCase();
     }
 
     captureCamera(viewer) {
@@ -331,16 +351,35 @@ class SceneConfig {
         };
         if (mat.size !== def.size) m.size = roundTo(mat.size, 3);
 
+        // Composite mixes attributes by these weights, all six kept when any is changed.
+        // brush_selection.js sets them as one-element arrays, hence Number().
+        const weight = key => Number(mat[SceneConfig.WEIGHTS[key]]);
+        const weightKeys = Object.keys(SceneConfig.WEIGHTS);
+        if (weightKeys.some(k => weight(k) !== def[SceneConfig.WEIGHTS[k]])) {
+            m.weights = Object.fromEntries(weightKeys.map(k => [k, roundTo(weight(k), 3)]));
+        }
+
         // Potree fits an unset intensity range to the data (updateMaterialDefaults), so only a range that
         // differs from the data's is kept. The elevation range is always set at load, so it's only kept
-        // when it's what is shown.
+        // when it's what is shown (on its own or mixed into composite).
         const ranges = {};
         const intensity = mat.intensityRange;
         const dataIntensity = pc.getAttribute?.("intensity")?.range;
         const autoIntensity = !isFinite(intensity[0]) ||
             (dataIntensity && intensity[0] === dataIntensity[0] && intensity[1] === dataIntensity[1]);
         if (!autoIntensity) ranges.intensity = roundTo([...intensity], 3);
-        if (mat.activeAttributeName === "elevation") ranges.elevation = roundTo([...mat.elevationRange], 3);
+        const showsElevation = mat.activeAttributeName === "elevation" ||
+            (mat.activeAttributeName === "composite" && weight("elevation") > 0);
+        if (showsElevation) ranges.elevation = roundTo([...mat.elevationRange], 3);
+
+        // Other attributes' ranges (the Extra Attribute slider) are only set from the UI; the shader
+        // falls back to the data's range, so one that matches it is left out.
+        for (const [name, range] of mat.ranges) {
+            if (name === "intensity" || name === "elevation" || typeof range?.[0] !== "number") continue;
+            const data = pc.getAttribute?.(name)?.range;
+            if (data && range[0] === data[0] && range[1] === data[1]) continue;
+            ranges[name] = roundTo([...range], 3);
+        }
         if (Object.keys(ranges).length) m.ranges = ranges;
 
         if (mat.gradient !== def.gradient) {
@@ -349,9 +388,13 @@ class SceneConfig {
         }
         if (!mat.color.equals(def.color)) m.color = roundTo(mat.color.toArray(), 4);
         if (mat.matcap !== def.matcap) m.matcap = mat.matcap;
+        if (mat.backfaceCulling !== def.backfaceCulling) m.backfaceCulling = mat.backfaceCulling;
 
-        if (mat.rgbGamma !== def.rgbGamma || mat.rgbBrightness !== def.rgbBrightness || mat.rgbContrast !== def.rgbContrast) {
-            m.rgb = { gamma: mat.rgbGamma, brightness: mat.rgbBrightness, contrast: mat.rgbContrast };
+        // Gamma, brightness and contrast of rgb, intensity and extra attributes; all three when any is changed.
+        for (const group of SceneConfig.GBC_GROUPS) {
+            const parts = ["gamma", "brightness", "contrast"];
+            if (parts.every(p => mat[gbcProperty(group, p)] === def[gbcProperty(group, p)])) continue;
+            m[group] = Object.fromEntries(parts.map(p => [p, roundTo(mat[gbcProperty(group, p)], 3)]));
         }
 
         this.pointclouds[id].material = m;
@@ -385,6 +428,19 @@ class SceneConfig {
 
 SceneConfig.KEYS = ["vtype", "doi", "viewer", "camera", "cesium", "startZones", "classificationEdits", "pointclouds"];
 
+// material.weights key -> PointCloudMaterial property (the composite attribute's weights)
+SceneConfig.WEIGHTS = {
+    rgb: "weightRGB", intensity: "weightIntensity", elevation: "weightElevation",
+    classification: "weightClassification", returnNumber: "weightReturnNumber", sourceID: "weightSourceID",
+};
+// material keys holding { gamma, brightness, contrast }
+SceneConfig.GBC_GROUPS = ["rgb", "intensity", "extra"];
+
+// ("rgb", "gamma") -> "rgbGamma"
+function gbcProperty(group, part) {
+    return group + part[0].toUpperCase() + part.slice(1);
+}
+
 function roundTo(v, digits) {
     const f = 10 ** digits;
     const r = x => Math.round(x * f) / f + 0;   // + 0 turns -0 into 0
@@ -396,7 +452,8 @@ function isSceneConfigFile(data) {
 }
 
 // Startup for a schema-2 zones.json: everything config.js used to do comes from the file.
-async function initSceneFromConfig(data, zonesURL) {
+// `keepCamera`: the camera has been placed already, so it isn't fitted to the clouds.
+async function initSceneFromConfig(data, zonesURL, keepCamera = false) {
     const sc = new SceneConfig(data.sceneConfig, zonesURL);
     if (!sc.doi) sc.useCurrentDataset();             // a file that doesn't say belongs to the dataset it came from
     window.sceneConfig = sc;
@@ -409,7 +466,7 @@ async function initSceneFromConfig(data, zonesURL) {
     if (!urlCamera) sc.applyCamera(viewer);
 
     await sc.loadPointClouds(viewer);
-    if (!urlCamera && !sc.camera && viewer.scene.pointclouds.length) viewer.fitToScreen();
+    if (!urlCamera && !keepCamera && !sc.camera && viewer.scene.pointclouds.length) viewer.fitToScreen();
 
     // Zones match clouds on pc.name, which is the id. Start zones are applied by
     // applyZoneVisibilityFromURL(), after any zone state in the URL.
@@ -435,7 +492,8 @@ async function initSceneFromConfig(data, zonesURL) {
 }
 
 // The sceneConfig of an imported zones.json, merged into the scene's: clouds the scene's config doesn't
-// have are added and loaded; everything else in it (and every cloud it already has) stays as it is.
+// have are added and loaded, and its Cesium basemap settings fill in the ones the scene's leave out;
+// everything else in it (and every cloud and setting the scene already has) stays as it is.
 // A scene still loaded from config.js is captured first, so its own clouds stay in the config.
 // `dataset` ({ vtype, doi }) is where the file came from, for a file that doesn't say; otherwise it is
 // taken to be this scene's. Returns the ids added.
@@ -447,6 +505,11 @@ async function mergeImportedSceneConfig(json, dataset = null) {
 
     if (!window.sceneConfig) window.sceneConfig = await SceneConfig.capture(viewer, baseURL);
     const sc = window.sceneConfig;
+    const cesiumKeys = Object.keys(imported.cesium).filter(key => sc.cesium[key] === undefined);
+    for (const key of cesiumKeys) sc.cesium[key] = imported.cesium[key];
+    // a basemap already built keeps its old settings until it's rebuilt
+    if (cesiumKeys.length && window.CesiumBasemap) CesiumBasemap.reconfigure();
+
     const ids = sc.mergePointClouds(imported);
     await sc.loadPointClouds(viewer, ids);
     return ids;

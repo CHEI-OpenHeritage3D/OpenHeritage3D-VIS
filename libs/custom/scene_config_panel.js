@@ -36,6 +36,7 @@
 
     const BACKGROUNDS = [["gradient", "Gradient"], ["black", "Black"], ["white", "White"], ["skybox", "Skybox"]];
     const CLIP_TASKS = [[0, "None"], [1, "Highlight"], [2, "Show inside"], [3, "Show outside"]];
+    const GRADIENT_REPEATS = [["clamp", "Clamp"], ["repeat", "Repeat"], ["mirrored_repeat", "Mirrored repeat"]];
 
     // Projections Scene Setup offers without typing proj4; anything else is a custom string.
     const CALIFORNIA_ALBERS = "+proj=aea +lat_0=0 +lon_0=-120 +lat_1=34 +lat_2=40.5 +x_0=0 +y_0=-4000000 +datum=NAD83 +units=m +no_defs +type=crs";
@@ -490,6 +491,7 @@
                 e => set("hqSplats", e.target.value === "true"), false)),
             row("Clip task", select(CLIP_TASKS, v.clipTask,
                 e => set("clipTask", e.target.value === "" ? undefined : Number(e.target.value)))),
+            row("Gradient repeat", select(GRADIENT_REPEATS, v.gradientRepeat, e => set("gradientRepeat", e.target.value || undefined))),
             el("p", { class: "sc-hint" }, "Blank fields use the viewer's defaults."));
     }
 
@@ -935,20 +937,31 @@
 
     function materialSummary(m) {
         if (!m) return "Potree default";
+        // "rgb gamma 1.2, contrast 0.1" — only the parts away from 1/0/0
+        const gbc = group => {
+            const g = m[group];
+            const parts = g && [
+                g.gamma !== 1 && `gamma ${fmt(g.gamma)}`,
+                g.brightness !== 0 && `brightness ${fmt(g.brightness)}`,
+                g.contrast !== 0 && `contrast ${fmt(g.contrast)}`,
+            ].filter(Boolean);
+            return parts?.length && `${group} ${parts.join(", ")}`;
+        };
+        const weights = m.weights && Object.entries(m.weights).filter(([, w]) => w).map(([k, w]) => `${k} ${fmt(w)}`);
+        const ranges = Object.entries(m.ranges || {}).map(([name, r]) => `${name} ${r.map(fmt).join("–")}`);
         const parts = [
             m.attribute,
             m.shape,
             m.sizeType,
             m.size !== undefined && `size ${m.size}`,
             m.minSize !== undefined && `min ${m.minSize}`,
+            m.backfaceCulling && "backface culling",
             m.matcap && m.matcap.replace(/\.\w+$/, ""),
-            m.ranges?.intensity && `intensity ${m.ranges.intensity.map(fmt).join("–")}`,
-            m.ranges?.elevation && `elevation ${m.ranges.elevation.map(fmt).join("–")}`,
+            weights && `weights ${weights.join(", ") || "all 0"}`,
+            ...ranges,
             m.gradient && `${typeof m.gradient === "string" ? m.gradient.toLowerCase() : "custom"} gradient`,
             m.color && "colour",
-            m.rgb && m.rgb.gamma !== 1 && `gamma ${fmt(m.rgb.gamma)}`,
-            m.rgb && m.rgb.brightness !== 0 && `brightness ${fmt(m.rgb.brightness)}`,
-            m.rgb && m.rgb.contrast !== 0 && `contrast ${fmt(m.rgb.contrast)}`,
+            ...SceneConfig.GBC_GROUPS.map(gbc),
         ];
         return parts.filter(Boolean).join(" · ") || "Potree default";
     }

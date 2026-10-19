@@ -560,6 +560,12 @@ style.textContent += `
     color: #f0f0f5;
     border-radius: 6px;
 }
+/* Dropdowns (not the list boxes, which draw in the page): without these the browser draws the open
+   list white, and the options' near-white text (inherited from the select) vanishes on Windows and Linux. */
+.zone-form select:not([size]):not([multiple]),
+.annotation-type-select { color-scheme: dark; }
+.zone-form select:not([size]):not([multiple]) option,
+.annotation-type-select option { background: #1b1c20; color: #f0f0f5; }
 .zone-form .zf-section-body input:focus,
 .zone-form .zf-section-body select:focus,
 .zone-form .zf-section-body textarea:focus {
@@ -978,8 +984,8 @@ function openZoneForm(zone = null) {
     hierBody.appendChild(typeLabel);
 
     const backgroundSelect = document.createElement("select");
-    backgroundSelect.id = "annotationType";
-    backgroundSelect.className = "annotation-type-select";
+    backgroundSelect.id = "zoneBackground";
+    backgroundSelect.className = "zone-background-select";
 
     const backgrounds = [
         { label: "Cesium", value: "cesium" },
@@ -2423,6 +2429,14 @@ async function importZonesData(importedData, dataset = null) {
     }
     initAddedZones(added);
     for (const zone of reshow) setZoneVisibility(zone, true);
+
+    // A file with a Cesium basemap shows it, as a zone with a "cesium" background would, until a zone or
+    // the sidebar sets another background. Without a usable projection it stays off.
+    const cesium = schema2 && Object.keys(importedData.sceneConfig.cesium || {}).length > 0;
+    if (cesium && window.CesiumBasemap?.setActive(true)) {
+        viewer.setBackground("none");
+        window.cesiumActive = true;
+    }
 
     const parts = [`${added.length - replaced - (groupCreated ? 1 : 0)} added` + (groupName ? ` under "${groupName}"` : "")];
     if (replaced) parts.push(`${replaced} replaced`);

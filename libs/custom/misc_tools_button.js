@@ -316,8 +316,12 @@ document.addEventListener("DOMContentLoaded", () => {
 				name: "Transformation", id: "transformPCBtn", onClick: () => openTransformPanel()
 			},
 			{
-				name: "Classification", id: "brushModeBtn", onClick: () => openBrushPanel()
+				name: "Classification Brush", id: "brushModeBtn", onClick: () => openBrushPanel()
 			},
+			// class_legend.js isn't loaded by every page that uses this menu
+			...(window.ClassLegend?.toggle ? [{
+				name: "Class Legend", id: "classLegendBtn", onClick: () => window.ClassLegend.toggle()
+			}] : []),
 			// class_hover_picker.js isn't loaded by every page that uses this menu
 			// ...(typeof togglePointInspector === "function" ? [{
 			// 	name: "Point Inspector", id: "pointInspectorBtn", onClick: () => togglePointInspector()

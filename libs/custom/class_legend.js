@@ -5,25 +5,26 @@
  *
  * Description:
  *   A floating legend of every classification class the viewer knows: code,
- *   name, colour, and whether the class is hidden. It opens by itself while
- *   at least one visible point cloud is drawing classification colours —
- *   the "Classification" material, or a composite with a non-zero
- *   classification weight ("RGBA Classes", "Intensity Classes", the brush's
- *   RGB/class blend) — and closes again when none is. It also stays out of
- *   the way while the Classification Brush panel is open, since that panel
- *   has its own class grid. Framed by panel_window_manager.js like the
- *   other panels.
+ *   name, colour, and whether the class is hidden. Opened and closed from
+ *   the toolbar's Tools menu ("Classification Legend"). Framed by
+ *   panel_window_manager.js like the other panels.
+ *
+ *   It used to open by itself while at least one visible point cloud was
+ *   drawing classification colours — the "Classification" material, or a
+ *   composite with a non-zero classification weight ("RGBA Classes",
+ *   "Intensity Classes", the brush's RGB/class blend) — close again when
+ *   none was, and stay out of the way while the Classification Brush panel
+ *   was open. That code is commented out below (Auto show / hide).
  *
  *   Also owns class name/colour resolution and the chip styling, which the
  *   Point Inspector (class_hover_picker.js) reuses through window.ClassLegend.
  *
  * Usage:
- *   Nothing to call. The switch on each class shows or hides that class
- *   (viewer.setClassificationVisibility, so the brush and Potree's sidebar
- *   stay in step). Closing the window keeps it closed until classification
- *   colours are switched off and back on.
+ *   window.ClassLegend.toggle() opens or closes it. The switch on each class
+ *   shows or hides that class (viewer.setClassificationVisibility, so the
+ *   brush and Potree's sidebar stay in step).
  *
- * Detection:
+ * Detection (for the commented-out auto show / hide):
  *   Event-driven, no polling. A cloud's material dispatches
  *   material_property_changed both when its active attribute changes and
  *   when a composite weight changes; the cloud dispatches visibility_changed;
@@ -341,7 +342,7 @@
         close.title = "Close";
         close.innerHTML = "&times;";
         close.addEventListener("click", () => {
-            dismissed = true;   // stay closed until classes are switched off and on
+            // dismissed = true;   // stay closed until classes are switched off and on
             closeLegend();
         });
         header.appendChild(close);
@@ -365,63 +366,70 @@
         setTimeout(() => p.remove(), 200);
     }
 
+    // Tools menu ▸ Classification Legend
+    function toggleLegend() {
+        if (panel) closeLegend();
+        else openLegend();
+    }
+
     // ══════════════════════════════════════════════════════════════
-    //  Auto show / hide
+    //  Auto show / hide — disabled; the legend is opened from the Tools menu.
     // ══════════════════════════════════════════════════════════════
-    let classesShown = false;   // some visible cloud is drawing class colours
-    let dismissed = false;      // user closed the legend while classes were shown
-    let checkQueued = false;
-
-    // Composite weights are plain numbers from Potree/the brush, but index.html
-    // sets them as one-element arrays ([0.75]); accept both.
-    const weight = (w) => Number(Array.isArray(w) ? w[0] : w) || 0;
-
-    function drawsClasses(pc) {
-        const m = pc.material;
-        if (!pc.visible || !m) return false;
-        if (m.activeAttributeName === "classification") return true;
-        return m.activeAttributeName === "composite" && weight(m.weightClassification) > 0;
-    }
-
-    // The brush panel shows its own class grid; don't stack a second legend.
-    const brushPanelOpen = () => !!document.getElementById("brushPanel");
-
-    function check() {
-        checkQueued = false;
-        const on = viewer.scene.pointclouds.some(drawsClasses);
-        if (on !== classesShown) {
-            classesShown = on;
-            if (!on) dismissed = false;   // show again next time classes come on
-        }
-        // open/close are no-ops when already in that state
-        if (classesShown && !dismissed && !brushPanelOpen()) openLegend();
-        else closeLegend();
-    }
-
-    function scheduleCheck() {
-        if (checkQueued) return;
-        checkQueued = true;
-        Promise.resolve().then(check);
-    }
-
-    const bound = new WeakSet();
-    function bind(pc) {
-        if (!pc || bound.has(pc)) return;
-        bound.add(pc);
-        pc.addEventListener("visibility_changed", scheduleCheck);
-        if (pc.material) pc.material.addEventListener("material_property_changed", scheduleCheck);
-    }
+    // let classesShown = false;   // some visible cloud is drawing class colours
+    // let dismissed = false;      // user closed the legend while classes were shown
+    // let checkQueued = false;
+    //
+    // // Composite weights are plain numbers from Potree/the brush, but index.html
+    // // sets them as one-element arrays ([0.75]); accept both.
+    // const weight = (w) => Number(Array.isArray(w) ? w[0] : w) || 0;
+    //
+    // function drawsClasses(pc) {
+    //     const m = pc.material;
+    //     if (!pc.visible || !m) return false;
+    //     if (m.activeAttributeName === "classification") return true;
+    //     return m.activeAttributeName === "composite" && weight(m.weightClassification) > 0;
+    // }
+    //
+    // // The brush panel shows its own class grid; don't stack a second legend.
+    // const brushPanelOpen = () => !!document.getElementById("brushPanel");
+    //
+    // function check() {
+    //     checkQueued = false;
+    //     const on = viewer.scene.pointclouds.some(drawsClasses);
+    //     if (on !== classesShown) {
+    //         classesShown = on;
+    //         if (!on) dismissed = false;   // show again next time classes come on
+    //     }
+    //     // open/close are no-ops when already in that state
+    //     if (classesShown && !dismissed && !brushPanelOpen()) openLegend();
+    //     else closeLegend();
+    // }
+    //
+    // function scheduleCheck() {
+    //     if (checkQueued) return;
+    //     checkQueued = true;
+    //     Promise.resolve().then(check);
+    // }
+    //
+    // const bound = new WeakSet();
+    // function bind(pc) {
+    //     if (!pc || bound.has(pc)) return;
+    //     bound.add(pc);
+    //     pc.addEventListener("visibility_changed", scheduleCheck);
+    //     if (pc.material) pc.material.addEventListener("material_property_changed", scheduleCheck);
+    // }
 
     function init() {
-        viewer.scene.pointclouds.forEach(bind);
-        new MutationObserver(scheduleCheck).observe(document.body, { childList: true });
-        viewer.scene.addEventListener("pointcloud_added", (e) => {
-            bind(e.pointcloud);
-            scheduleCheck();
-        });
+        // Auto show / hide hooks:
+        // viewer.scene.pointclouds.forEach(bind);
+        // new MutationObserver(scheduleCheck).observe(document.body, { childList: true });
+        // viewer.scene.addEventListener("pointcloud_added", (e) => {
+        //     bind(e.pointcloud);
+        //     scheduleCheck();
+        // });
         viewer.addEventListener("classifications_changed", fillLegend);
         viewer.addEventListener("classification_visibility_changed", syncVisibility);
-        scheduleCheck();
+        // scheduleCheck();
     }
 
     // index.html creates the viewer before this script runs; the Florence and
@@ -435,6 +443,7 @@
         createChip,
         open: openLegend,
         close: closeLegend,
-        isClassificationShown: () => classesShown,
+        toggle: toggleLegend,
+        // isClassificationShown: () => classesShown,   // auto show / hide only
     };
 })();

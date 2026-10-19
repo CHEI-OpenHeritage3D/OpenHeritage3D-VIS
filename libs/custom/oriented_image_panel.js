@@ -18,7 +18,7 @@
  *     ← / →          previous / next image
  *     Space (hold)   "peek" — momentarily hide the photo to reveal the cloud
  *     [ / ]          nudge opacity down / up
- *     W              cycle opacity: 100% -> 50% -> 0% -> 50% -> 100% ...
+ *     C              cycle opacity: 100% -> 50% -> 0% -> 50% -> 100% ...
  *
  * Usage:
  *   Include this file AFTER Potree, the viewer, and the modified potree.js
@@ -414,7 +414,7 @@
         collection: null,      // active OrientedImages instance
         currentImage: null,    // focused OrientedImage
         opacity: 1.0,          // current photo opacity (sticky during navigation)
-        opacityToggleDir: -1,  // -1 = W is heading toward 0%, 1 = heading toward 100%
+        opacityToggleDir: -1,  // -1 = C is heading toward 0%, 1 = heading toward 100%
         peeking: false,        // Space-to-peek active
         peekPrevOpacity: 1.0,
     };
@@ -612,8 +612,8 @@
 
         const opLabel = document.createElement("span");
         opLabel.className = "oi-opacity-label";
-        opLabel.innerHTML = 'Opacity <span class="oi-key">W</span>';
-        opLabel.title = "Toggle photo on/off (W)";
+        opLabel.innerHTML = 'Opacity <span class="oi-key">C</span>';
+        opLabel.title = "Toggle photo on/off (C)";
         opacity.appendChild(opLabel);
 
         elSlider = document.createElement("input");
@@ -630,7 +630,7 @@
         elOpacityVal = document.createElement("span");
         elOpacityVal.className = "oi-opacity-value";
         elOpacityVal.textContent = "100%";
-        elOpacityVal.title = "Cycle photo opacity: 100% / 50% / 0% (W)";
+        elOpacityVal.title = "Cycle photo opacity: 100% / 50% / 0% (C)";
         elOpacityVal.addEventListener("click", () => toggleOpacityCycle());
         opacity.appendChild(elOpacityVal);
 
@@ -893,7 +893,7 @@
         orientedImageState.controls = null;
         orientedImageState.collection = null;
         orientedImageState.currentImage = null;
-        setPCMaterial("rgba classes");
+        if(brushState.active) setPCMaterial("rgba classes");
         if (typeof exitClassBlendForOrientedImage === "function") exitClassBlendForOrientedImage();
         // Bring every other image set and 360 marker back to whatever
         // visibility their own zone/set state (and the global toggle) says
@@ -950,8 +950,8 @@
             case "]":
                 setOpacity(orientedImageState.opacity + 0.1);
                 break;
-            case "w":
-            case "W":
+            case "c":
+            case "C":
                 // cycle photo opacity: 100% -> 50% -> 0% -> 50% -> 100% ...
                 toggleOpacityCycle();
                 e.preventDefault();
