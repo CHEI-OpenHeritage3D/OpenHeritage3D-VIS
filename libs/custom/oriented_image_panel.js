@@ -740,6 +740,7 @@
     // ══════════════════════════════════════════════════════════════
 
     let hoverCard = null, hoverCardTitle = null, hoverCardSubtitle = null;
+    let hoverShowToken = 0;
 
     function ensureHoverCard() {
         if (hoverCard) return hoverCard;
@@ -821,10 +822,15 @@
         ].filter(Boolean).join(" · ");
 
         if (event) positionHoverCard(card, event.clientX, event.clientY);
-        requestAnimationFrame(() => card.classList.add("visible"));
+        // Token so a hide that lands before this frame isn't undone by it.
+        const token = ++hoverShowToken;
+        requestAnimationFrame(() => {
+            if (token === hoverShowToken) card.classList.add("visible");
+        });
     }
 
     function hideHoverCard() {
+        hoverShowToken++;
         if (hoverCard) hoverCard.classList.remove("visible");
     }
 
@@ -855,6 +861,19 @@
     // only after the 500ms fly-in, and potree.js keeps dispatching hover until
     // then, so relying on that alone leaves the card sitting over the photo.
     viewer.renderer.domElement.addEventListener("dblclick", () => hideHoverCard());
+
+    // potree.js only sends oriented_image_unhover from a canvas mousemove, so
+    // anything that moves the photo out from under a still cursor, or the
+    // cursor off the canvas, would strand the card. Cover those here.
+    const hoverCanvas = viewer.renderer.domElement;
+    hoverCanvas.addEventListener("mouseleave", () => hideHoverCard());
+    hoverCanvas.addEventListener("mousedown", () => hideHoverCard());
+    // Legacy wheel events only, the same ones InputHandler listens to: Chrome
+    // stops firing "mousewheel" on an element once it has any standard "wheel"
+    // listener, which silently kills Potree's scroll zoom.
+    hoverCanvas.addEventListener("mousewheel", () => hideHoverCard());
+    hoverCanvas.addEventListener("DOMMouseScroll", () => hideHoverCard()); // Firefox
+    window.addEventListener("blur", () => hideHoverCard());
 
     viewer.addEventListener("oriented_image_captured", (e) => {
         orientedImageState.controls = e.controls;
