@@ -142,6 +142,7 @@
 
 		{ // MATERIAL
 			let options = [
+				"Default",
 				"RGBA", 
 				"Classification",
 				"RGBA Classes",
@@ -169,33 +170,56 @@
 				}
 			};
 
-			attributeSelection.on("change", () => {
-			let selected = attributeSelection.val();
-		
-			for (const pointcloud of viewer.scene.pointclouds){
+			// The cloud's material from sceneConfig, else the one it started with
+			// (updateMaterialMenuOnStart in brush_selection.js records it; config.js scenes have no sceneConfig).
+			const configuredMaterial = pc =>
+				window.sceneConfig?.pointclouds[pc.name]?.material || pc.userData.startMaterial || {};
+			// sceneConfig only stores an intensity range that differs from the data's, so fall back to that.
+			const configuredIntensityRange = pc =>
+				configuredMaterial(pc).ranges?.intensity ?? pc.getAttribute?.("intensity")?.range;
 
-				if(selected === "RGBA Classes"){
-					pointcloud.material.activeAttributeName = "composite";
-					pointcloud.material.weightRGBA = [100];
-					pointcloud.material.weightIntensity = [0];
-					pointcloud.material.intensityRange = [16, 65000];
-					pointcloud.material.weightClassification = [0.75];
+			attributeSelection.on("change", () => {
+				const selected = attributeSelection.val();
+				const pointclouds = viewer.scene.pointclouds;
+
+				if(selected === "Default"){
+					for(const pc of pointclouds){
+						const attribute = configuredMaterial(pc).attribute || "rgba";
+						pc.material.activeAttributeName = attribute;
+						if(attribute === "intensity" || attribute === "intensity gradient"){
+							pc.material.intensityRange = configuredIntensityRange(pc);
+						}
+					}
+				}
+				else if(selected === "RGBA Classes"){
+					for(const pc of pointclouds){
+						pc.material.activeAttributeName = "composite";
+						pc.material.weightRGBA = [100];
+						pc.material.weightIntensity = [0];
+						pc.material.intensityRange = configuredIntensityRange(pc);
+						pc.material.weightClassification = [0.75];
+					}
 				}
 				else if(selected === "Intensity Classes"){
-					pointcloud.material.activeAttributeName = "composite";
-					pointcloud.material.weightRGBA = [0];
-					pointcloud.material.weightIntensity = [90];
-					pointcloud.material.intensityRange = [16, 65000];
-					pointcloud.material.weightClassification = [10];
+					for(const pc of pointclouds){
+						pc.material.activeAttributeName = "composite";
+						pc.material.weightRGBA = [0];
+						pc.material.weightIntensity = [90];
+						pc.material.intensityRange = configuredIntensityRange(pc);
+						pc.material.weightClassification = [10];
+					}
 				}
 				else if(selected === "Composite Classes"){
+					// Already loops over the visible clouds itself.
 					applyClassBlendToVisiblePointclouds();
 				}
 				else {
-					pointcloud.material.activeAttributeName = selected.toLowerCase();
+					const attribute = selected.toLowerCase();
+					for(const pc of pointclouds){
+						pc.material.activeAttributeName = attribute;
+					}
 				}
-			}
-		});
+			});
 
 		}
 

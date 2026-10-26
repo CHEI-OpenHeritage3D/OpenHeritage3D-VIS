@@ -58770,25 +58770,39 @@ vec3 getCompositeColor(){
 	vec3 c;
 	float w;
 
-	c += wRGB * getRGB();
-	w += wRGB;
+	if(wRGB  > 0.0){
+		c += wRGB * getRGB();
+		w += wRGB;
+	}
 	
-	c += wIntensity * getIntensity() * vec3(1.0, 1.0, 1.0);
-	w += wIntensity;
+	if(wIntensity > 0.0){
+		c += wIntensity * getIntensity() * vec3(1.0, 1.0, 1.0);
+		w += wIntensity;
+	}
 	
-	c += wElevation * getElevation();
-	w += wElevation;
+	if(wElevation > 0.0){
+		c += wElevation * getElevation();
+		w += wElevation;
+	}
 	
-	c += wReturnNumber * getReturnNumber();
-	w += wReturnNumber;
+	if(wReturnNumber > 0.0){
+		c += wReturnNumber * getReturnNumber();
+		w += wReturnNumber;
+	}
 	
-	c += wSourceID * getSourceID();
-	w += wSourceID;
+	if(wSourceID > 0.0){
+		c += wSourceID * getSourceID();
+		w += wSourceID;
+	}
 	
-	vec4 cl = wClassification * getClassification();
-	c += cl.a * cl.rgb;
-	w += wClassification * cl.a;
-
+	// Class 0 (never classified) keeps the other attributes' colour; it only takes its
+	// class colour when nothing else contributes, so it isn't hidden.
+	if(classification > 0.5 || w == 0.0){
+		vec4 cl = getClassification();
+		c += wClassification * cl.a * cl.rgb;
+		w += wClassification * cl.a;
+	}
+	
 	c = c / w;
 	
 	if(w == 0.0){
@@ -64050,7 +64064,6 @@ void main() {
 						if(!range){
 							range = attExtra.range;
 						}
-
 						if(!range){
 							range = [0, 1];
 						}
@@ -64061,14 +64074,23 @@ void main() {
 						let globalRange = range;
 						let globalRangeSize = globalRange[1] - globalRange[0];
 
-						let scale = initialRangeSize / globalRangeSize;
-						let offset = -(globalRange[0] - initialRange[0]) / initialRangeSize;
+						let scale, offset;
+						const p = bufferAttribute ? bufferAttribute.potree : undefined;
+						if (p && p.scale !== undefined && p.offset !== undefined) {
+							// stored s = (v - p.offset) * p.scale; want w = (v - g0) / (g1 - g0)
+							scale = 1 / (p.scale * globalRangeSize);
+							offset = p.scale * (p.offset - globalRange[0]);
+						} else {
+							// loaders without per-buffer packing info (e.g. EPT): data is normalized over initialRange
+							scale = initialRangeSize / globalRangeSize;
+							offset = -(globalRange[0] - initialRange[0]) / initialRangeSize;
+						}
 
-						scale = Number.isNaN(scale) ? 1 : scale;
-						offset = Number.isNaN(offset) ? 0 : offset;
+						scale = Number.isFinite(scale) ? scale : 1;
+						offset = Number.isFinite(offset) ? offset : 0;
 
 						shader.setUniform1f("uExtraScale", scale);
-						shader.setUniform1f("uExtraOffset", offset);					
+						shader.setUniform1f("uExtraOffset", offset);
 					}
 
 				}else {

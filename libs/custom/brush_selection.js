@@ -1029,7 +1029,26 @@ function updateMaterialMenu(value) {
 	}
 }
 
+/**
+ * Called once the scene's clouds have their starting materials. Records each cloud's
+ * as pc.userData.startMaterial (in sceneConfig's shape) for the toolbar's "Default",
+ * since a config.js scene has no sceneConfig to go back to, and selects "Default".
+ * A page whose menu has no "Default" shows the attribute most visible clouds use.
+ */
 function updateMaterialMenuOnStart(){
+	for (const pc of viewer.scene.pointclouds) {
+		if (pc.userData.startMaterial) continue;
+		const intensity = pc.material.intensityRange;
+		pc.userData.startMaterial = { attribute: pc.material.activeAttributeName };
+		if (isFinite(intensity[0])) pc.userData.startMaterial.ranges = { intensity: [...intensity] };
+	}
+
+	const menu = $("#potree_toolbar").find("#optMaterial")[0];
+	if ([...(menu?.options || [])].some(o => o.value === "Default")) {
+		updateMaterialMenu("Default");
+		return;
+	}
+
 	const visiblePCs = viewer.scene.pointclouds.filter(p => p.visible);
 
 	if (visiblePCs.length === 0) return null;
