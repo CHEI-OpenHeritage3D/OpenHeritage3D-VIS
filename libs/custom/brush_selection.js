@@ -3155,12 +3155,14 @@ function removeImplicitNodes(){
     }
 }
 
-let _pendingPaint = null;
+// pointcloud → most recent position waiting for the stroke lock. One slot per
+// cloud, so painting every visible cloud doesn't overwrite the others' slots.
+const _pendingPaints = new Map();
 
 async function paintAtPoint(pointcloud, hit) {
     if (brushState.strokeInProgress) {
         // Don't drop — remember the most recent target and apply it when free
-        _pendingPaint = { pointcloud, position: hit.position.clone() };
+        _pendingPaints.set(pointcloud, hit.position.clone());
         return;
     }
 
@@ -3181,10 +3183,12 @@ async function paintAtPoint(pointcloud, hit) {
         setStrokeIndicator(false);
         viewer.renderer.domElement.style.cursor = '';
 
-        // Drain the most recent pending paint, if any
-        if (_pendingPaint) {
-            const { pointcloud: pc, position } = _pendingPaint;
-            _pendingPaint = null;
+        // Drain the longest-waiting cloud next (Map keeps insertion order and
+        // re-setting a key doesn't move it, so clouds take turns)
+        const next = _pendingPaints.entries().next();
+        if (!next.done) {
+            const [pc, position] = next.value;
+            _pendingPaints.delete(pc);
             paintAtPoint(pc, { position });
         }
     }
@@ -4086,9 +4090,26 @@ function openBrushPanel() {
         for (const pc of viewer.scene.pointclouds) {
             if (term && !pc.name.toLowerCase().includes(term)) continue;
             const item = document.createElement("div");
-            item.textContent = pc.name;
             item.dataset.value = pc.name;
             item.style.cssText = optionStyle(false);
+
+            const name = document.createElement("span");
+            name.textContent = pc.name;
+            name.title = pc.name;
+            name.style.cssText = "overflow:hidden; text-overflow:ellipsis; white-space:nowrap;";
+            item.appendChild(name);
+
+            // Visibility toggle — setting pc.visible fires visibility_changed,
+            // which keeps the sidebar tree in sync.
+            const visChk = document.createElement("input");
+            visChk.type = "checkbox";
+            visChk.className = "brush-vis-checkbox";
+            visChk.title = "Toggle visibility";
+            visChk.checked = pc.visible;
+            visChk.addEventListener("click", (e) => { e.stopPropagation(); });
+            visChk.addEventListener("change", () => { pc.visible = visChk.checked; });
+            item.appendChild(visChk);
+
             pcDropdown.appendChild(item);
         }
 
@@ -4102,6 +4123,7 @@ function openBrushPanel() {
 
     function optionStyle(hover) {
         return `
+            display: flex; align-items: center; gap: 8px;
             padding: 8px 12px; font-size: 13px; cursor: pointer;
             color: ${hover ? "#fff" : "#ccc"};
             background: ${hover ? "rgba(79,70,229,0.35)" : "transparent"};
@@ -5065,6 +5087,28 @@ function applyEditsOnMove(){
     editApplyTimer = setTimeout(applyEditsToLoadedNodes, 10);
 }
 
+function pickAt(ev){
+    if (!ev || !brushState.active || !brushState.sphere) return;
+
+    const rect = viewer.renderer.domElement.getBoundingClientRect();
+    const ray  = getPickRay(ev, viewer.scene.getActiveCamera(), rect);
+    const pickParams = {
+        x: ev.clientX - rect.left,
+        y: rect.height - (ev.clientY - rect.top),
+        pickWindowSize: 65, pickClipped: true
+    };
+
+    return pickAnyPointcloud(ray, pickParams);
+}
+
+function paintStroke(result){
+    if(!result) return;
+    const targets = brushState.targetPointcloud ? [result.pc] :
+        viewer.scene.pointclouds.filter(pc => pc.visible);
+    
+    for (const pc of targets) paintAtPoint(pc, result.hit);
+}
+
 
 document.addEventListener("DOMContentLoaded", () => {
     initBrushSphere();
@@ -5169,23 +5213,13 @@ document.addEventListener("DOMContentLoaded", () => {
             const ev = _pendingMouseEvent;
             if (!ev || !brushState.active || !brushState.sphere) return;
 
-            const rect = viewer.renderer.domElement.getBoundingClientRect();
-            const ray  = getPickRay(ev, viewer.scene.getActiveCamera(), rect);
-            const pickParams = {
-                x: ev.clientX - rect.left,
-                y: rect.height - (ev.clientY - rect.top),
-                pickWindowSize: 65, pickClipped: true
-            };
-
-            const result = pickAnyPointcloud(ray, pickParams);
+            const result = pickAt(ev);
             if (result) {
                 brushState.sphere.position.copy(result.hit.position);
                 const r = brushState.radius;
                 brushState.sphere.scale.set(r, r, r);
                 brushState.sphere.visible = true;
-                if (brushState.painting && ev.buttons === 1) {
-                    paintAtPoint(result.pc, result.hit);
-                }
+                if (brushState.painting && ev.buttons === 1) paintStroke(result);
                 if (_shiftHeld) updateOrientedImageHover(ev.clientX, ev.clientY);
             } else {
                 brushState.sphere.visible = false;
@@ -5201,16 +5235,9 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         if (!brushState.active || !brushState.painting) return;
 
-        const ray = getPickRay(event, viewer.scene.getActiveCamera());
-        const rect = viewer.renderer.domElement.getBoundingClientRect();
-        const pickParams = {
-            x: event.clientX - rect.left,
-            y: rect.height - (event.clientY - rect.top),
-            pickWindowSize: 65, pickClipped: true
-        };
+        const result = pickAt(event);
 
-        const result = pickAnyPointcloud(ray, pickParams);
-        if (result) paintAtPoint(result.pc, result.hit);
+        paintStroke(result);
     });
 
     // Ctrl is already the paint-hold key, so while it's down let the scroll
