@@ -3320,9 +3320,16 @@ function openGridPanel() {
                 </div>
             </div>
 
-            <button id="grid-generate-btn" class="brush-action-btn brush-btn-success">
-                Generate Grid
-            </button>
+            <div>
+                <div class="brush-label" style="margin-bottom:6px;">
+                    Tile Overlap &nbsp;
+                    <span id="grid-overlap-label" style="color:#c4c0ff; font-weight:700;">none</span>
+                </div>
+                <div class="brush-slider-row">
+                    <input id="grid-overlap-slider" class="brush-slider" type="range" min="1" max="1.5" value="1" step="0.05">
+                    <span class="brush-slider-value" id="grid-overlap-value">1.00×</span>
+                </div>
+            </div>
 
             <button id="grid-clear-btn" class="brush-action-btn brush-btn-danger">
                 Clear Volumes
@@ -3351,22 +3358,34 @@ function openGridPanel() {
         const n = parseInt(slider.value);
         nLabel.textContent = n;
         sizeLabel.textContent = `${n} × ${n} = ${n * n} tiles`;
+        generateGrid();
+    });
+
+    const overlapSlider = document.getElementById("grid-overlap-slider");
+    const overlapLabel = document.getElementById("grid-overlap-label");
+    const overlapValue = document.getElementById("grid-overlap-value");
+
+    overlapSlider.addEventListener("input", () => {
+        const f = parseFloat(overlapSlider.value);
+        overlapValue.textContent = `${f.toFixed(2)}×`;
+        // each tile grows by (f - 1) / 2 of its base size on every side
+        const perSide = Math.round((f - 1) / 2 * 100);
+        overlapLabel.textContent = perSide === 0 ? "none" : `+${perSide}% per side`;
+        generateGrid();
     });
 
     document.getElementById("grid-volume-btn").addEventListener("click", () => {
         viewer.setClipTask(1);
-        viewer.volumeTool.startInsertion({ clip: true });
+        const master = viewer.volumeTool.startInsertion({ clip: true });
+        // build the grid as soon as the volume is placed
+        master.addEventListener("drop", function onDrop() {
+            master.removeEventListener("drop", onDrop);
+            generateGrid();
+        });
     });
 
     document.getElementById("grid-clear-btn").addEventListener("click", () => {
-        for (const sub of _gridSubVolumes) viewer.scene.removeVolume(sub);
-        _gridSubVolumes = [];
-
-        for (const lbl of _gridLabels) viewer.scene.scene.remove(lbl);
-        _gridLabels = [];
-
-        // also clear the back-reference on any tile volumes still in the scene
-        for (const v of viewer.scene.volumes) if (v._tileLabel) v._tileLabel = null;
+        removeGridTiles();
 
         const master = viewer.scene.volumes.find(
             v => v instanceof Potree.BoxVolume && !v._isGridSub
@@ -3374,25 +3393,25 @@ function openGridPanel() {
         if (master) viewer.scene.removeVolume(master);
     });
 
-    document.getElementById("grid-generate-btn").addEventListener("click", () => {
+    // Rebuilds the tiles from the current slider values; called on every slider change
+    function generateGrid() {
         const n = parseInt(slider.value);
-        for (const lbl of _gridLabels) viewer.scene.scene.remove(lbl);
-        _gridLabels = [];
         // Pick the first user-created BoxVolume that isn't one of our sub-tiles
         const master = viewer.scene.volumes.find(
             v => v instanceof Potree.BoxVolume && !v._isGridSub
         );
-        if (!master) {
-            alert("Create a volume first using the button above.");
-            return;
-        }
+        if (!master) return;
 
-        // Clear previous sub-volumes
-        for (const sub of _gridSubVolumes) viewer.scene.removeVolume(sub);
-        _gridSubVolumes = [];
+        removeGridTiles();
 
-        // Subdivide in X and Y, leave Z full
-        const subScale = new THREE.Vector3(master.scale.x / n, master.scale.y / n, master.scale.z);
+        // Subdivide in X and Y, leave Z full. Tiles keep their grid centers and are
+        // enlarged in X/Y by the overlap factor, so neighbours share a redundant strip.
+        const overlap = parseFloat(overlapSlider.value);
+        const subScale = new THREE.Vector3(
+            master.scale.x / n * overlap,
+            master.scale.y / n * overlap,
+            master.scale.z
+        );
         const R = new THREE.Matrix4().makeRotationFromEuler(master.rotation);
 
         for (let i = 0; i < n; i++) {
@@ -3424,9 +3443,25 @@ function openGridPanel() {
 
             }
         }
-    });
+    }
 
     document.getElementById("grid-share-btn").addEventListener("click", openShareLinksModal);
+}
+
+function removeGridTiles() {
+    for (const sub of _gridSubVolumes) viewer.scene.removeVolume(sub);
+    _gridSubVolumes = [];
+
+    // labels are rebuilt on every slider tick, so free their canvas textures
+    for (const lbl of _gridLabels) {
+        viewer.scene.scene.remove(lbl);
+        lbl.material.map.dispose();
+        lbl.material.dispose();
+    }
+    _gridLabels = [];
+
+    // also clear the back-reference on any tile volumes still in the scene
+    for (const v of viewer.scene.volumes) if (v._tileLabel) v._tileLabel = null;
 }
 
 function toExcelCol(n) {
