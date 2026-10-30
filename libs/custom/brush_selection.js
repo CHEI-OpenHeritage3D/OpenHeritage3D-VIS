@@ -1570,6 +1570,11 @@ function applyLedgerToNode(geoNode, pcEdits, baselineOverride, entryOverride) {
 
 function explicitToImplicitNode(geoNode, pcEdits) {
     if (!geoNode || !pcEdits) return;
+    // Leaves only. An "all" entry also sets the class of every descendant that has no
+    // entry of its own, so promoting an inner node because its own points agree would
+    // extend that class to descendant points no stroke assigned. A leaf has no
+    // descendants, so there the promotion is exact.
+    if (Object.values(geoNode.children || {}).some(Boolean)) return;
     const entry = pcEdits.get(geoNode.name);
     if (!entry) return;
 
@@ -2378,6 +2383,62 @@ function isNodeFullyClipped(worldBox, clipInverses, showInside) {
     }
 }
 
+/**
+ * True if no class an entry assigns is hidden: an "all" entry's baseline and every
+ * per-point override. A missing entry assigns nothing.
+ */
+function entryClassesVisible(entry, visibleLUT) {
+    if (!entry) return true;
+    if (isAllEntry(entry) && !visibleLUT[entry.classification]) return false;
+    const overrides = getOverrides(entry);
+    if (overrides) {
+        for (const edit of overrides.values()) {
+            if (!visibleLUT[edit.classification]) return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * True if every point inside worldBox is visible under the clip volumes, so a bulk mark
+ * cannot reach a clipped point. Showing inside (SHOW_INSIDE), a point is visible inside
+ * any volume, so the box must lie inside one; a box covered only by several volumes
+ * together counts as not visible. Showing outside (SHOW_OUTSIDE), a point is visible
+ * outside every volume, so the box must miss them all; that test uses the extent of the
+ * box's corners in each volume's frame, so a near miss counts as an overlap. Both err
+ * toward per-point work, never toward classifying a clipped point.
+ */
+function isNodeFullyVisibleUnderClip(worldBox, clipInverses, showInside) {
+    const v = new THREE.Vector4();
+    for (const inv of clipInverses) {
+        let minX = Infinity, maxX = -Infinity;
+        let minY = Infinity, maxY = -Infinity;
+        let minZ = Infinity, maxZ = -Infinity;
+        for (let k = 0; k < 8; k++) {
+            v.set(
+                k & 1 ? worldBox.max.x : worldBox.min.x,
+                k & 2 ? worldBox.max.y : worldBox.min.y,
+                k & 4 ? worldBox.max.z : worldBox.min.z,
+                1.0
+            ).applyMatrix4(inv);
+            if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x;
+            if (v.y < minY) minY = v.y; if (v.y > maxY) maxY = v.y;
+            if (v.z < minZ) minZ = v.z; if (v.z > maxZ) maxZ = v.z;
+        }
+        if (showInside) {
+            // All eight corners inside this volume: the box, and every point in it, is too.
+            if (minX >= -0.5 && maxX <= 0.5 &&
+                minY >= -0.5 && maxY <= 0.5 &&
+                minZ >= -0.5 && maxZ <= 0.5) return true;
+        } else if (maxX >= -0.5 && minX <= 0.5 &&
+                   maxY >= -0.5 && minY <= 0.5 &&
+                   maxZ >= -0.5 && minZ <= 0.5) {
+            return false;    // may overlap this volume, whose interior is hidden
+        }
+    }
+    return !showInside;
+}
+
 // ── Stroke profiler: counting the subtrees implicit nodes stand for ──
 // An "all" entry covers its node's whole subtree, which the stroke never visits and
 // whose hierarchy is often not expanded in memory yet. The profiler counts it from
@@ -2649,7 +2710,6 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
   };
 
   try {
-    const radiusSq = radius * radius;
     const pcName   = pointcloud.name;
     const cls      = viewer.classifications;
     const editedGeoNodes = new Set();
@@ -2667,6 +2727,28 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
     const ensurePcEdits = () => {
         if (!pcEdits) { pcEdits = new Map(); brushEdits.set(pcName, pcEdits); }
         return pcEdits;
+    };
+
+    // Names of the ledger entries below a node, by binary search in a sorted snapshot of
+    // the ledger's names instead of a scan of the whole ledger per enclosed node; names
+    // sharing a prefix are contiguous when sorted. The snapshot is taken on first use and
+    // stays exact for the rest of the stroke: a node's subtree is reached only through
+    // the node, whose enclosed-node branch runs before any await, so no entry below it is
+    // added before it is visited. Entries are read live; names deleted since are skipped.
+    let _sortedNames = null;
+    const descendantEntryNames = (prefix) => {
+        if (!pcEdits || pcEdits.size === 0) return [];
+        if (!_sortedNames) _sortedNames = [...pcEdits.keys()].sort();
+        let lo = 0, hi = _sortedNames.length;
+        while (lo < hi) {                       // first name that sorts after the prefix itself
+            const mid = (lo + hi) >>> 1;
+            if (_sortedNames[mid] <= prefix) lo = mid + 1; else hi = mid;
+        }
+        const out = [];
+        for (let i = lo; i < _sortedNames.length && _sortedNames[i].startsWith(prefix); i++) {
+            if (pcEdits.has(_sortedNames[i])) out.push(_sortedNames[i]);
+        }
+        return out;
     };
 
     // Scratch objects — reused across all processNode calls
@@ -2730,74 +2812,44 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
 
         if (boxFullyInsideSphere(localBox, _centerPcLocal, _radiusLocalSq)) {
             ensurePcEdits();
-            // console.log("node fully inside", geoNode);
+            // A bulk mark replaces every entry below this node, so both the shortcut and
+            // the gate must account for those entries, not only the node's own.
+            const descendants = descendantEntryNames(nodeName);
+
+            // Nothing to do: the node is already a pure baseline of the target class and
+            // no entry below it says otherwise.
             if (isAllEntry(ownEntry)
                 && ownEntry.classification === classification
-                && !ownEntry.overrides) {
+                && !ownEntry.overrides
+                && descendants.length === 0) {
                 if (_prof) _prof.sameRoots.push(geoNode);
                 return;
             }
 
-            let canBulk = false;
-
-            if (isAllEntry(ownEntry) && !ownEntry.overrides) {
-                // Pure all — composition is a single class
-                canBulk = visibleLUT[ownEntry.classification] === 1;
-            } else if (isAllEntry(ownEntry) && ownEntry.overrides) {
-                // Hybrid — baseline and every override class must be visible
-                canBulk = visibleLUT[ownEntry.classification] === 1;
-                if (canBulk) {
-                    for (const edit of ownEntry.overrides.values()) {
-                        if (!visibleLUT[edit.classification]) { canBulk = false; break; }
-                    }
-                }
-            } else if (!ownEntry && effectiveBaseline !== null) {
-                // Inherited baseline — composition is the baseline class
-                canBulk = visibleLUT[effectiveBaseline] === 1;
+            // Visibility gate: bulk only if no point in the subtree has a hidden class.
+            let canBulk;
+            if (!anyClassHidden) {
+                canBulk = true;
+            } else if (effectiveBaseline !== null) {
+                // Under a baseline the ledger fixes every point's class (the baseline, an
+                // override, or an entry below), so check those without loading anything.
+                canBulk = visibleLUT[effectiveBaseline] === 1
+                    && entryClassesVisible(ownEntry, visibleLUT)
+                    && descendants.every(name => entryClassesVisible(pcEdits.get(name), visibleLUT));
             } else {
-                // Fresh (no entry, no inheritance) or pure-Map: composition includes
-                // unknown LAS originals. Safe to bulk only when nothing is hidden —
-                // then there's nothing to preserve and we skip the whole subtree walk.
-                canBulk = !anyClassHidden;
+                // No baseline at or above: the subtree still holds source classes, unknown
+                // until loaded, so any hidden class blocks bulk.
+                canBulk = false;
             }
 
+            // Clipping gate: bulk only if every point in the subtree is visible.
             if (canBulk && toClip) {
-                // If any clip volume intersects this node, some points may be
-                // clipped (invisible) — can't bulk-fill without classifying hidden points.
-                for (let ci = 0; ci < clipInverses.length; ci++) {
-                    const inv = clipInverses[ci];
-                    let minX = Infinity, maxX = -Infinity;
-                    let minY = Infinity, maxY = -Infinity;
-                    let minZ = Infinity, maxZ = -Infinity;
-                    const _v = new THREE.Vector4();
-                    for (let k = 0; k < 8; k++) {
-                        _v.set(
-                            k & 1 ? _boxWorld.max.x : _boxWorld.min.x,
-                            k & 2 ? _boxWorld.max.y : _boxWorld.min.y,
-                            k & 4 ? _boxWorld.max.z : _boxWorld.min.z,
-                            1.0
-                        ).applyMatrix4(inv);
-                        if (_v.x < minX) minX = _v.x; if (_v.x > maxX) maxX = _v.x;
-                        if (_v.y < minY) minY = _v.y; if (_v.y > maxY) maxY = _v.y;
-                        if (_v.z < minZ) minZ = _v.z; if (_v.z > maxZ) maxZ = _v.z;
-                    }
-                    if (maxX >= -0.5 && minX <= 0.5 &&
-                        maxY >= -0.5 && minY <= 0.5 &&
-                        maxZ >= -0.5 && minZ <= 0.5) {
-                        canBulk = false;
-                        break;
-                    }
-                }
+                canBulk = isNodeFullyVisibleUnderClip(_boxWorld, clipInverses, clipShowInside);
             }
-            
+
             if (canBulk) {
-                const prefix = nodeName;
-                for (const name of pcEdits.keys()) {
-                    if (name.length > prefix.length && name.startsWith(prefix)) {
-                        pcEdits.delete(name);
-                    }
-                }
-                pcEdits.set(prefix, { all: true, classification });
+                for (const name of descendants) pcEdits.delete(name);
+                pcEdits.set(nodeName, { all: true, classification });
                 fillLoadedSubtree(geoNode, classification);
                 if (_prof) _prof.bulkRoots.push(geoNode);
                 return;
@@ -2877,7 +2929,8 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
                 const dx = arr[ix]     - cx;
                 const dy = arr[ix + 1] - cy;
                 const dz = arr[ix + 2] - cz;
-                if (dx*dx + dy*dy + dz*dz > radiusSq) continue;
+                // Node-local coordinates, so compare with the local radius.
+                if (dx*dx + dy*dy + dz*dz > _radiusLocalSq) continue;
             }
 
             // ── Per-point clip test ──
