@@ -60,6 +60,7 @@
     const REGISTRY = {
         brushPanel:       { title: "Classification Brush",       titleSel: ".brush-title",     closeSel: ".brush-close",     w: 360, minW: 300, minH: 180 },
         gridPanel:        { title: "Work Distribution",          titleSel: ".brush-title",     closeSel: ".brush-close",     w: 300, minW: 260, minH: 160 },
+        ledgerAnalysisPanel: { title: "Ledger Analysis",         titleSel: ".brush-title",     closeSel: ".brush-close",     w: 400, minW: 340, minH: 200 },
         downloadPanel:    { title: "Download Points",            titleSel: ".download-title",  closeSel: ".download-close",  w: 380, minW: 300, minH: 160 },
         transformPanel:   { title: "Transform Point Cloud",      titleSel: ".transform-title", closeSel: ".transform-close", w: 340, minW: 300, minH: 200 },
         exportPanel:      { title: "Export Transform Code",      titleSel: ".transform-title", closeSel: ".transform-close", w: 360, minW: 300, minH: 180 },

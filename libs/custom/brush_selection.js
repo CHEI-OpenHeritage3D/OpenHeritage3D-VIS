@@ -2719,7 +2719,10 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
     const visibleLUT = new Uint8Array(256);
     let anyClassHidden = false;
     for (let k = 0; k < 256; k++) {
-        const vis = (cls[k]?.visible !== false) ? 1 : 0;
+        // A class without an entry shows as class k % 32 does (LAS 1.0–1.3 kept flags in the top
+        // bits), else as DEFAULT, as recomputeClassification() in potree.js renders it.
+        const entry = [cls[k], cls[k % 32], cls.DEFAULT].find(e => e?.color);
+        const vis = (entry?.visible !== false) ? 1 : 0;
         visibleLUT[k] = vis;
         if (!vis) anyClassHidden = true;
     }
@@ -4029,37 +4032,44 @@ function openBrushPanel() {
     title.textContent = "Classification Brush";
     header.appendChild(title);
 
-    // Admin button — Work Distribution
-    const distBtn = document.createElement("button");
-    distBtn.title = "Work Distribution";
-    distBtn.style.cssText = `
-        padding: 4px 9px;
-        border: 1px solid rgba(255,255,255,0.15);
-        border-radius: 6px;
-        background: rgba(255,255,255,0.06);
-        color: #aaa;
-        font-size: 11px;
-        font-weight: 600;
-        font-family: monospace;
-        cursor: pointer;
-        letter-spacing: 0.04em;
-        transition: background 0.15s, color 0.15s, border-color 0.15s;
-        margin-left: auto;
-        margin-right: 6px;
-    `;
-    distBtn.textContent = "⊞ Work Distribution";
-    distBtn.addEventListener("mouseenter", () => {
-        distBtn.style.background = "rgba(79,70,229,0.25)";
-        distBtn.style.color = "#c4c0ff";
-        distBtn.style.borderColor = "rgba(79,70,229,0.4)";
-    });
-    distBtn.addEventListener("mouseleave", () => {
-        distBtn.style.background = "rgba(255,255,255,0.06)";
-        distBtn.style.color = "#aaa";
-        distBtn.style.borderColor = "rgba(255,255,255,0.15)";
-    });
-    distBtn.addEventListener("click", openGridPanel);
-    header.appendChild(distBtn);
+    // Admin buttons — Work Distribution, and Analysis where brush_ledger_analysis.js is loaded
+    function makeAdminBtn(text, title, onClick) {
+        const b = document.createElement("button");
+        b.title = title;
+        b.style.cssText = `
+            padding: 4px 9px;
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 6px;
+            background: rgba(255,255,255,0.06);
+            color: #aaa;
+            font-size: 11px;
+            font-weight: 600;
+            font-family: monospace;
+            cursor: pointer;
+            letter-spacing: 0.04em;
+            transition: background 0.15s, color 0.15s, border-color 0.15s;
+            margin-right: 6px;
+        `;
+        b.textContent = text;
+        b.addEventListener("mouseenter", () => {
+            b.style.background = "rgba(79,70,229,0.25)";
+            b.style.color = "#c4c0ff";
+            b.style.borderColor = "rgba(79,70,229,0.4)";
+        });
+        b.addEventListener("mouseleave", () => {
+            b.style.background = "rgba(255,255,255,0.06)";
+            b.style.color = "#aaa";
+            b.style.borderColor = "rgba(255,255,255,0.15)";
+        });
+        b.addEventListener("click", onClick);
+        header.appendChild(b);
+        return b;
+    }
+    const distBtn = makeAdminBtn("⊞ Work Distribution", "Work Distribution", openGridPanel);
+    distBtn.style.marginLeft = "auto";
+    if (typeof openLedgerAnalysisPanel === "function") {
+        makeAdminBtn("⇄ Analysis", "Compare and merge ledger files", openLedgerAnalysisPanel);
+    }
 
     const helpBtn = document.createElement("button");
     helpBtn.className = "brush-help-btn";

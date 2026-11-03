@@ -200,14 +200,17 @@ async function maybeGunzip(buffer) {
 }
 
 function splitHeader(bytes) {
-    // The header is ASCII and ends with the "#BINARY,<len>\n" line.
+    // The header ends with the "#BINARY,<len>\n" line. It can hold UTF-8 (contributor, citation,
+    // class names), and a string index counts UTF-16 units, not bytes, so the body offset is the
+    // header's encoded length: the bytes exportBrowserBinary() wrote before the binary body.
     const probe = new TextDecoder("utf-8", { fatal: false })
         .decode(bytes.subarray(0, Math.min(bytes.length, 1 << 16)));
     const marker = probe.indexOf("#BINARY,");
     if (marker === -1) return null;
     const nl = probe.indexOf("\n", marker);
     if (nl === -1) return null;
-    return { header: probe.slice(0, nl), bodyOffset: nl + 1 };
+    const header = probe.slice(0, nl);
+    return { header, bodyOffset: new TextEncoder().encode(header).length + 1 };
 }
 
 function parseClassMap(header) {
