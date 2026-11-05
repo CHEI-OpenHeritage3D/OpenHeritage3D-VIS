@@ -78371,7 +78371,7 @@ ENDSEC
 				params.id = id;
 			}
 
-			for(const tag of ["cx", "cy", "k1", "k2", "k3", "k4", "p1", "p2", "t1", "t2"]){
+			for(const tag of ["cx", "cy", "k1", "k2", "k3", "k4", "p1", "p2", "t1", "t2", "b1", "b2"]){
 				const value = read(tag, parseFloat);
 				if(value !== undefined){
 					params[tag] = value;
@@ -78433,7 +78433,11 @@ ENDSEC
 					continue;
 				}
 
-				const tokens = line.includes(',') ? line.split(',') : line.split(/\s+/);	// changed by aviral 6/15/2026 to allow csv
+				// changed 11/4/2026: a tab-separated file (Metashape's reference export) is split on
+				// tabs, so image names with spaces or commas stay whole. Runs of tabs collapse,
+				// as Metashape leaves the reference columns empty.
+				const tokens = line.includes('\t') ? line.split(/\t+/)
+					: line.includes(',') ? line.split(',') : line.split(/\s+/);	// changed by aviral 6/15/2026 to allow csv
 
 				const x = Number.parseFloat(tokens[1]);
 				if (isNaN(x)) continue;

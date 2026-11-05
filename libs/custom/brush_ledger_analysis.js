@@ -11,7 +11,8 @@
  * list, the contributor name or the scene, and never read classifications from the hosted octree.
  * Viewing is the one exception: View shows an imported ledger, and Merge its result, in the
  * viewer by putting it in brushEdits in place of the brush's own entries, which are set aside and
- * put back when viewing stops (see "Viewing a ledger"). Download saves the merge as a file. To
+ * put back when viewing stops (see "Viewing a ledger"). Download saves the merge as a file, and
+ * Export JSON the analysis: statistics, matrices and the histogram behind them. To
  * adjudicate, Merge, hide every class except Conflict, and brush over the conflicts: the brush
  * skips hidden classes point by point, so only Conflict points change. The brush panel's Export
  * then saves the merged ledger with those strokes.
@@ -28,7 +29,9 @@
  *           disjoint, end exclusive, adjacent runs of one class joined. null without overrides.
  *   A point's label is its own override, else the nearest "#all" at or above its node, else none:
  *   the same rule applyLedgerToNode() renders with. With class 0 set to count as no label, Compare
- *   and Merge read a label of 0 as none (see laReadTuples). Overrides stay as runs, the way the binary
+ *   and Merge read a label of 0 as none; with unlabeled points set to vote as class 0, they read a
+ *   ledger's missing label as 0 wherever another ledger labels the point (see laReadTuple).
+ *   Overrides stay as runs, the way the binary
  *   format stores them, at 12 bytes a run; Import expands each into a Map entry and an object per
  *   point, about 30 bytes per override.
  *
@@ -252,9 +255,11 @@ const _la = {
     inputs: [],      // imported ledgers in priority order, top first
     nextId: 1,
     // conflictClass null: automatic. zero: how a label of class 0 counts, "label" (Never
-    // Classified) or "none"; it reads both Compare's histogram and the merge.
-    rule: { mode: "consensus", ties: "conflict", conflictClass: null, zero: "label" },
-    result: null,    // last Compare: { inputIds, clouds, raw, tuples, stats, seconds }; tuples and stats read raw as rule.zero says
+    // Classified) or "none"; it reads both Compare's histogram and the merge. unlabeled: how a
+    // ledger without a label for a point counts where another ledger labels it, "abstain" or
+    // "background" (a vote for class 0). "background" needs zero "label"; laSetRule keeps them apart.
+    rule: { mode: "consensus", ties: "conflict", conflictClass: null, zero: "label", unlabeled: "abstain" },
+    result: null,    // last Compare: { inputIds, clouds, raw, tuples, stats, seconds, notes }; tuples and stats read raw as rule.zero says
     merged: null,    // last Merge: { id, clouds, key, rule, inputCount, summary, table }
     matrixPair: null,  // input ids [a, b] the confusion matrix shows; null: the pair with most overlap
     busy: null,      // { slot, label, cancel } while files are read or a Compare or merge runs
@@ -594,7 +599,9 @@ function laAutoConflictClass(inputs, table) {
 /**
  * The merged label of one point from its label tuple (one class per input, LA_NONE where an input
  * doesn't label it). Inputs without a label abstain: a point one ledger labels takes that label,
- * which is what makes tile margins work as a boundary review. rank[i] is input i's priority,
+ * which is what makes tile margins work as a boundary review. With unlabeled points voting as
+ * class 0, laReadTuple has already turned those abstentions into votes for 0.
+ * rank[i] is input i's priority,
  * 0 the highest. Returns [class, how], how being what decided it (for the preview).
  */
 function laResolve(t, rank, rule) {
@@ -638,17 +645,32 @@ const laTupleFromKey = (key) => Int16Array.from(key.split(","), Number);
 
 // A label tuple with class 0 read as no label
 const laZeroToNone = (t) => t.map(c => (c === 0 ? LA_NONE : c));
+// A label tuple with no label read as a vote for class 0
+const laNoneToZero = (t) => t.map(c => (c === LA_NONE ? 0 : c));
 
 /**
- * The Compare histogram as the class-0 setting reads it. With class 0 counting as no label, every
- * 0 becomes LA_NONE: tuples that end up alike are added together, and those left without a label
- * drop out, as the walk drops them. So the setting needs no new walk.
+ * A label tuple as the rule reads it. Class 0 counting as no label turns every 0 into LA_NONE.
+ * Unlabeled points voting as class 0 turn every LA_NONE into 0, but only where some ledger labels
+ * the point: a point no ledger labels stays unlabeled, so the merge writes nothing for it. Use that
+ * setting only when every ledger covers the same area, e.g. each contributor's whole-area ledger,
+ * not tile ledgers, whose unlabeled points can lie outside their tile.
  */
-function laReadTuples(raw, zero) {
-    if (zero !== "none") return raw;
+function laReadTuple(t, rule) {
+    if (rule.zero === "none") t = laZeroToNone(t);
+    if (rule.unlabeled === "background" && t.some(c => c !== LA_NONE)) t = laNoneToZero(t);
+    return t;
+}
+
+/**
+ * The Compare histogram as the rule reads it (laReadTuple): tuples that end up alike are added
+ * together, and those left without a label drop out, as the walk drops them. So neither setting
+ * needs a new walk.
+ */
+function laReadTuples(raw, rule) {
+    if (rule.zero !== "none" && rule.unlabeled !== "background") return raw;
     const hist = new Map();
     for (const { t, count } of raw) {
-        const u = laZeroToNone(t);
+        const u = laReadTuple(t, rule);
         if (u.every(c => c === LA_NONE)) continue;
         const key = laTupleKey(u);
         hist.set(key, (hist.get(key) || 0) + count);
@@ -1108,7 +1130,9 @@ function laRuleText(rule) {
     const text = rule.mode === "priority" ? "priority"
         : rule.ties === "conflict" ? `consensus; ties to class ${rule.conflictClass} (${LA_CONFLICT_NAME})`
         : "consensus; ties by priority";
-    return rule.zero === "none" ? `${text}; class 0 as no label` : text;
+    if (rule.zero === "none") return `${text}; class 0 as no label`;
+    if (rule.unlabeled === "background") return `${text}; unlabeled votes as class 0`;
+    return text;
 }
 
 // The merged ledger's classes: the inputs' (laClassTable), with Conflict when the merge uses it
@@ -1146,21 +1170,135 @@ function laMergedHeader(clouds, inputs, rule) {
     ];
 }
 
-function laMergedFileName(clouds, inputs, rule) {
-    const safe = (s) => String(s).replace(/[^\w\-]/g, "_");
-    return [...clouds.keys(), laTiles(inputs).join("_"), "merged", rule.mode, "ledger"]
-        .filter(Boolean).map(safe).join("_") + ".gz";
+// Non-empty parts joined by "_", characters a file name can't take replaced
+function laFileName(parts, ext) {
+    return parts.filter(Boolean).map(s => String(s).replace(/[^\w\-]/g, "_")).join("_") + ext;
 }
 
-async function laSaveGzip(parts, name) {
-    const gz = await new Response(
-        new Blob(parts).stream().pipeThrough(new CompressionStream("gzip"))
-    ).blob();
-    const url = URL.createObjectURL(gz);
+function laMergedFileName(clouds, inputs, rule) {
+    return laFileName([...clouds.keys(), laTiles(inputs).join("_"), "merged", rule.mode, "ledger"], ".gz");
+}
+
+function laSaveBlob(blob, name) {
+    const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url; a.download = name;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
+}
+
+async function laSaveGzip(parts, name) {
+    laSaveBlob(await new Response(new Blob(parts).stream().pipeThrough(new CompressionStream("gzip"))).blob(), name);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  Exporting the analysis (JSON)
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * The last Compare as one JSON document: the ledgers, the agreement statistics, every pair's
+ * confusion matrix, the label-tuple histogram all of them come from, the merge preview under the
+ * current settings, and the last merge. Ledgers are numbered by priority as the panel numbers
+ * them, and every per-ledger array follows that order, whatever the order was when Compare ran.
+ */
+function laAnalysisReport() {
+    const r = _la.result, inputs = _la.inputs, n = inputs.length;
+    // The histogram with its tuples in list order, so statistics come out per priority
+    const pos = inputs.map(i => r.inputIds.indexOf(i.id));
+    const tuples = r.tuples.map(({ t, count }) => ({ t: Int16Array.from(pos, p => t[p]), count }));
+    const s = laStats(tuples, n);
+    const rule = laEffectiveRule(), problem = laConflictProblem();
+    const p = laPreview(tuples, inputs.map((_, i) => i), rule, n);
+    const { table, clashes } = laClassTable(inputs);
+    const names = laDisplayNames(), m = _la.merged;
+    const label = (c) => (c === LA_NONE ? null : c);
+    const entries = (sum) => ({ nodes: sum.nodes, bulk: sum.bulk, overrideRuns: sum.runs, overridePoints: sum.points });
+    const sorted = (set) => [...set].sort((a, b) => a - b);
+
+    const matrices = [];
+    for (let a = 0; a < n; a++) {
+        for (let b = a + 1; b < n; b++) {
+            const c = laConfusion(tuples, a, b);
+            matrices.push({ rows: a + 1, columns: b + 1, classes: c.axis.map(label),
+                            points: c.axis.map(x => c.axis.map(y => c.count(x, y))) });
+        }
+    }
+    return {
+        format: "oh3d-ledger-analysis",
+        version: 1,
+        about: "Ledger Analysis of the Classification Brush. Ledgers are numbered by priority, 1 at the top " +
+               "of the list; per-ledger arrays follow that order. A label of null means the ledger " +
+               "doesn't label the point. Point counts cover the compared clouds.",
+        generated: new Date().toISOString(),
+        analyst: laAnalystName() || null,
+        doi: window.doi || inputs.find(i => i.meta.doi)?.meta.doi || null,
+        settings: {
+            treatClass0AsNoLabel: rule.zero === "none",
+            unlabeledVotesAsClass0: rule.unlabeled === "background",
+            merge: {
+                mode: rule.mode,
+                ties: rule.mode === "consensus" ? rule.ties : null,
+                conflictClass: rule.mode === "consensus" && rule.ties === "conflict" ? rule.conflictClass : null,
+                text: laRuleText(rule),
+            },
+        },
+        ledgers: inputs.map((input, i) => ({
+            priority: i + 1,
+            name: names.get(input.id),
+            file: input.fileName,
+            format: input.format,
+            contributor: input.meta.contributor || null,
+            tile: input.meta.tile || null,
+            generated: input.meta.generated || null,
+            doi: input.meta.doi || null,
+            clouds: [...input.clouds.keys()],
+            entries: entries(input.summary),
+            classes: sorted(input.summary.classes),
+            labeledPoints: s.labeled[i],
+        })),
+        classes: [...table].sort((a, b) => a[0] - b[0]).map(([value, c]) => ({ value, name: c.name, color: c.color })),
+        classNameClashes: clashes,
+        compare: {
+            clouds: r.clouds,
+            seconds: r.seconds,
+            warnings: r.notes,
+            points: { labeled: s.any, byOneLedger: s.byOne, byTwoOrMore: s.byMany, allAgree: s.agree, disagree: s.disagree },
+            pairs: s.pairs.map(q => ({ ledgers: [q.i + 1, q.j + 1], bothLabel: q.both, agree: q.agree,
+                                       kappa: Number.isFinite(q.kappa) ? q.kappa : null })),
+            classConfusions: s.confusions.map(c => ({ classes: [c.a, c.b], points: c.count })),
+            confusionMatrices: matrices,
+            labelTuples: tuples.map(({ t, count }) => ({ labels: Array.from(t, label), points: count }))
+                .sort((x, y) => y.points - x.points),
+        },
+        mergePreview: {
+            ...(problem ? { problem } : {}),
+            decided: { byOneLedger: p.how.single, allAgree: p.how.agree, majority: p.how.majority,
+                       topLedgerWins: p.how.priority, tieTopLedgerWins: p.how.tiePriority, tieToConflict: p.how.tieConflict },
+            perLedger: inputs.map((_, i) => ({ priority: i + 1, kept: p.kept[i], overruled: p.overruled[i], toConflict: p.conflicted[i] })),
+        },
+        lastMerge: m ? {
+            rule: laRuleText(m.rule),
+            ledgers: m.inputCount,
+            upToDate: m.key === laMergeKey(),
+            clouds: [...m.clouds.keys()],
+            entries: entries(m.summary),
+            classes: sorted(m.summary.classes),
+        } : null,
+    };
+}
+
+// JSON indented by level, with anything short (a label tuple, a matrix row) kept on one line
+function laStringify(value, indent = "") {
+    const flat = JSON.stringify(value) ?? "null";
+    if (value === null || typeof value !== "object" || flat.length + indent.length <= 100
+        || (Array.isArray(value) && value.every(v => v === null || typeof v !== "object"))) return flat;
+    const inner = indent + "  ";
+    const items = Array.isArray(value)
+        ? value.map(v => inner + laStringify(v, inner))
+        : Object.entries(value).filter(([, v]) => v !== undefined)
+            .map(([k, v]) => `${inner}${JSON.stringify(k)}: ${laStringify(v, inner)}`);
+    const [open, close] = Array.isArray(value) ? ["[", "]"] : ["{", "}"];
+    return `${open}\n${items.join(",\n")}\n${indent}${close}`;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1252,8 +1390,11 @@ function laClear() {
 }
 
 function laSetRule(patch) {
+    // A vote for class 0 means nothing while class 0 counts as no label, so each setting turns the other off
+    if (patch.unlabeled === "background") patch = { ...patch, zero: "label" };
+    if (patch.zero === "none") patch = { ...patch, unlabeled: "abstain" };
     Object.assign(_la.rule, patch);
-    if ("zero" in patch) laRecount();
+    if ("zero" in patch || "unlabeled" in patch) laRecount();
     laRender();
 }
 
@@ -1320,18 +1461,18 @@ function laMergeKey() {
     return JSON.stringify([_la.inputs.map(i => i.id), laRuleText(laEffectiveRule())]);
 }
 
-// The merge engine under `rule`: priority by list order, class 0 read as the rule says
+// The merge engine under `rule`: priority by list order, labels read as the rule says (laReadTuple)
 function laMergeWith(inputs, rule, opts) {
     const rank = inputs.map((_, i) => i), zeroNone = rule.zero === "none";
-    return laMergeEngine(inputs, (t) => laResolve(zeroNone ? laZeroToNone(t) : t, rank, rule)[0],
+    return laMergeEngine(inputs, (t) => laResolve(laReadTuple(t, rule), rank, rule)[0],
                          { ...opts, noneAs: zeroNone ? 0 : null });
 }
 
-// Fills the Compare result's tuples and stats: its histogram as the class-0 setting reads it
+// Fills the Compare result's tuples and stats: its histogram as the rule reads it
 function laRecount() {
     const r = _la.result;
     if (!r) return;
-    r.tuples = laReadTuples(r.raw, _la.rule.zero);
+    r.tuples = laReadTuples(r.raw, _la.rule);
     r.stats = laStats(r.tuples, r.inputIds.length);
 }
 
@@ -1351,9 +1492,10 @@ async function laCompare() {
             clouds: clouds.map(c => c.name),
             raw,
             seconds: (performance.now() - t0) / 1000,
+            notes: out.notes || [],
         };
         laRecount();
-        for (const note of out.notes || []) laNotice("compare", "warn", note);
+        for (const note of _la.result.notes) laNotice("compare", "warn", note);
     } catch (e) {
         laFailed("compare", "Compare", e);
     }
@@ -1391,6 +1533,20 @@ async function laDownload() {
         laNotice("download", "info", `Downloaded ${fileName}.`);
     } catch (e) {
         laFailed("download", "Merging", e);
+    }
+    laRender();
+}
+
+function laExportAnalysis() {
+    if (_la.busy || !_la.result) return;
+    try {
+        const fileName = laFileName([..._la.result.clouds, laTiles(_la.inputs).join("_"), "ledger_analysis"], ".json");
+        laSaveBlob(new Blob([laStringify(laAnalysisReport()) + "\n"], { type: "application/json" }), fileName);
+        const text = `Downloaded ${fileName}.`;
+        _la.notices = _la.notices.filter(x => x.text !== text);   // once, however often it's exported
+        laNotice("compare", "info", text);
+    } catch (e) {
+        laFailed("compare", "Export", e);
     }
     laRender();
 }
@@ -1623,6 +1779,15 @@ function openLedgerAnalysisPanel() {
                "Off: class 0 (Never Classified) is a label like any other.",
         onclick: () => laSetRule({ zero: _la.rule.zero === "none" ? "label" : "none" }),
     }, "Treat class 0 as No Label");
+    ui.unlabeled = laEl("button", {
+        type: "button",
+        title: "On: where any ledger labels a point, a ledger that leaves it unlabeled votes for class 0, " +
+               "so a class that only one ledger painted can be outvoted. Use it only when every ledger covers " +
+               "the same area, such as each contributor's whole-area ledger, not for tile ledgers, whose " +
+               "unlabeled points can lie outside their tile. Turns off Treat class 0 as No Label. " +
+               "Off: a ledger without a label for a point doesn't vote on it.",
+        onclick: () => laSetRule({ unlabeled: _la.rule.unlabeled === "background" ? "abstain" : "background" }),
+    }, "Unlabeled votes as class 0");
     ui.compareBtn  = laEl("button.brush-action-btn.brush-btn-primary", { type: "button", onclick: laCompare }, "Compare");
     ui.compareHint = laEl("div.la-hint.la-center");
     ui.results     = laEl("section.la-section");
@@ -1673,7 +1838,7 @@ function openLedgerAnalysisPanel() {
                 laEl("div.la-head-actions", null, ui.addBtn, ui.clearBtn)),
             ui.list, ui.viewNote, ui.slots.files),
         ui.clouds,
-        laEl("div.la-section", null, laEl("div.la-seg", null, ui.zero), ui.compareBtn, ui.compareHint, ui.slots.compare),
+        laEl("div.la-section", null, laEl("div.la-seg", null, ui.zero, ui.unlabeled), ui.compareBtn, ui.compareHint, ui.slots.compare),
         ui.results,
         laEl("div.brush-divider"),
         laEl("section.la-section", null,
@@ -1862,7 +2027,14 @@ function laRenderResults() {
         laEl("td.la-pct", null, pct ?? ""));
 
     const parts = [
-        laEl("span.brush-label", null, "Agreement"),
+        laEl("div.la-section-head", null,
+            laEl("span.brush-label", null, "Agreement"),
+            laEl("div.la-head-actions", null,
+                laEl("button.la-link-btn", {
+                    type: "button", disabled: !!_la.busy, onclick: laExportAnalysis,
+                    title: "Save this analysis as a JSON file: every statistic, every pair's confusion matrix, " +
+                           "the label histogram they come from, and the merge preview",
+                }, "Export JSON"))),
         laEl("table.la-table", null, laEl("tbody", null,
             row("Points labeled", s.any),
             row("by one ledger only", s.byOne, laPct(s.byOne, s.any), 1),
@@ -2001,6 +2173,7 @@ function laRenderMerge() {
         for (const b of seg.children) b.setAttribute("aria-pressed", String(b.dataset.value === rule[key]));
     }
     ui.zero.setAttribute("aria-pressed", String(rule.zero === "none"));
+    ui.unlabeled.setAttribute("aria-pressed", String(rule.unlabeled === "background"));
     const toConflict = rule.mode === "consensus" && rule.ties === "conflict";
     ui.tiesField.hidden = rule.mode !== "consensus";
     ui.conflictField.hidden = ui.conflictHint.hidden = !toConflict;
