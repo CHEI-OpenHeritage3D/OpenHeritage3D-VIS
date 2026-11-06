@@ -43,7 +43,7 @@
         heightOffset: 0,            // metres added to point cloud heights to get Cesium's ellipsoidal ones
         photorealisticTiles: true,  // Google Photorealistic 3D Tiles (they carry their own terrain)
         globe: false,               // Cesium's globe, for imagery and terrain
-        imagery: "ion",             // globe imagery: "ion" (Cesium World Imagery), "osm", "none"
+        imagery: "Bing Maps Aerial",// globe imagery: a name from Cesium's base layer picker (imageryChoices()), or "none"
         terrain: false,             // Cesium World Terrain on the globe
         skyAtmosphere: true,
         ionToken: null,             // null: the built-in token
@@ -56,8 +56,266 @@
     let transform = null;           // { projection, toMap, toScene }
     let previewBackground = null;   // background to go back to after a preview
     let listening = false;
+    let layerPicker = null;         // Cesium's BaseLayerPickerViewModel for the globe (no widget)
+    let builtWith = null;           // the settings the viewer was built with
+    let imageryError = null;        // why the selected imagery didn't load, for Scene Setup
 
     const settings = () => ({ ...DEFAULTS, ...(window.sceneConfig?.cesium || {}) });
+
+    // ── Imagery and terrain ──────────────────────────────────────
+    // The globe's layers come from the lists Cesium's base layer picker offers. sceneConfig keeps the
+    // imagery's name without the soft hyphens and no-break spaces Cesium puts in some for the widget
+    // ("Open\u00adStreet\u00adMap"); "ion" and "osm" are what files written before the picker hold.
+    const IMAGERY_ALIASES = { ion: "Bing Maps Aerial", osm: "OpenStreetMap" };
+    const plainName = name => name.replace(/\u00ad/g, "").replace(/\u00a0/g, " ");
+    const imageryName = value => IMAGERY_ALIASES[value] ?? value;
+
+    // [{ name, category, tooltip }] in Cesium's order, or null until Cesium is loaded (load()).
+    let imageryList = null;
+    function imageryChoices() {
+        if (!window.Cesium) return null;
+        return imageryList || (imageryList = Cesium.createDefaultImageryProviderViewModels()
+            .map(vm => ({ name: plainName(vm.name), category: vm.category, tooltip: vm.tooltip })));
+    }
+
+    // Selecting on the view model swaps the globe's base layer in place, as the widget does.
+    function applyLayers(s) {
+        const name = imageryName(s.imagery);
+        let imagery;
+        if (name === "wmts") {
+            if (!wmtsProblem(s.wmts)) imagery = wmtsViewModel(s.wmts);
+        } else if (name !== "none") {
+            const all = layerPicker.imageryProviderViewModels;
+            imagery = all.find(vm => plainName(vm.name) === name);
+            if (!imagery) {
+                console.warn(`[CesiumBasemap] Cesium ${Cesium.VERSION} has no imagery called "${s.imagery}"; showing ${all[0].name}.`);
+                imagery = all[0];
+            }
+        }
+        if (imagery !== layerPicker.selectedImagery) imageryError = null;
+        layerPicker.selectedImagery = imagery;
+        const terrain = s.terrain ? "Cesium World Terrain" : "WGS84 Ellipsoid";
+        layerPicker.selectedTerrain = layerPicker.terrainProviderViewModels.find(vm => vm.name === terrain);
+    }
+
+    // Not every choice loads everywhere: ion assets need to be in the Ion token's account (Blue Marble,
+    // Earth at night and Azure Maps aren't in the built-in one's), and Stadia's tile server refuses
+    // sites other than localhost that aren't registered with it. The first failure of the selected
+    // imagery is kept for Scene Setup, which redraws on "cesium-basemap-changed".
+    function watchImagery(cv) {
+        cv.imageryLayers.layerAdded.addEventListener(layer => {
+            const shallowFailures = new Set();     // WMTS levels near the top that failed
+            const fail = text => {
+                if (imageryError || !cv.imageryLayers.contains(layer)) return;
+                imageryError = `${plainName(layer.name)} didn't load: ${text}`;
+                document.dispatchEvent(new CustomEvent("cesium-basemap-changed"));
+            };
+            layer.errorEvent.addEventListener(err => fail(err?.statusCode === 404
+                ? "the Ion token's account doesn't have it (HTTP 404). Add it from Cesium ion's Asset Depot, or set an Ion token that has it."
+                : `${err?.message || err}`));
+            // Tiles past a server's deepest level fail too; only a refusal means the imagery can't show.
+            // A WMTS set up wrong fails from its first levels on; one missing level can just be a gap
+            // in the service (basemap.at has no level 0), two can't.
+            layer.readyEvent.addEventListener(provider => provider.errorEvent.addEventListener(e => {
+                const status = e.error?.statusCode;
+                if (status === 401 || status === 403) fail(`its tile server refused this site (HTTP ${status}).`);
+                else if (layer.name === WMTS_NAME && e.level <= provider.minimumLevel + 2 && shallowFailures.add(e.level).size >= 2) {
+                    // a date outside a layer's range fails the same way (NASA's GIBS answers 404)
+                    const dims = Object.entries(settings().wmts?.dimensions || {}).map(([k, v]) => `${k}=${v}`);
+                    fail(status ? `its first tiles fail (HTTP ${status}). Check the layer, style, format and tile matrix set against the service's capabilities` +
+                        (dims.length ? `, and that it has imagery for ${dims.join(", ")}.` : ".")
+                        : "its tiles can't be fetched: the server is unreachable, or doesn't let other sites load them (CORS).");
+                }
+            }));
+        });
+    }
+
+    // ── Web Map Tile Service ─────────────────────────────────────
+    // imagery "wmts" shows any WMTS layer, set up by sceneConfig.cesium.wmts in the terms of Cesium's
+    // WebMapTileServiceImageryProvider: url, layer, style, tileMatrixSetID (required), format,
+    // tileMatrixLabels, dimensions, tilingScheme ("webmercator" | "geographic"), rectangle ([w, s, e, n]
+    // degrees), tileWidth, tileHeight, minimumLevel, maximumLevel, subdomains and credit; `capabilities`
+    // is where Scene Setup read it from. The provider's clock/times (imagery that changes as Cesium's
+    // clock runs) go unused, as the basemap's clock stands still: a date goes in `dimensions` instead.
+    const WMTS_NAME = "Web Map Tile Service (WMTS)";
+    const WMTS_REQUIRED = { url: "a tile URL", layer: "a layer", style: "a style", tileMatrixSetID: "a tile matrix set" };
+
+    // What the WMTS settings lack for Cesium to request tiles, or null.
+    function wmtsProblem(w) {
+        const missing = Object.keys(WMTS_REQUIRED).filter(k => !w?.[k]).map(k => WMTS_REQUIRED[k]);
+        return missing.length ? `The WMTS needs ${missing.join(", ").replace(/, ([^,]*)$/, " and $1")}.` : null;
+    }
+
+    function wmtsOptions(w) {
+        const o = { ...w };
+        delete o.capabilities;
+        o.tilingScheme = w.tilingScheme === "geographic" ? new Cesium.GeographicTilingScheme() : new Cesium.WebMercatorTilingScheme();
+        // Cesium can't place tiles outside its tiling (Web Mercator stops at ±85.05°)
+        if (w.rectangle) o.rectangle = Cesium.Rectangle.intersection(Cesium.Rectangle.fromDegrees(...w.rectangle), o.tilingScheme.rectangle);
+        return o;
+    }
+
+    // A view model like the picker's own, made again whenever the settings change so that selecting
+    // it makes a new layer.
+    let wmtsVM = null;
+    function wmtsViewModel(w) {
+        const key = JSON.stringify(w);
+        if (wmtsVM?.key !== key) {
+            wmtsVM = new Cesium.ProviderViewModel({
+                name: WMTS_NAME, tooltip: w.layer, iconUrl: "", category: "Custom",
+                creationFunction: () => new Cesium.WebMapTileServiceImageryProvider(wmtsOptions(w)),
+            });
+            wmtsVM.key = key;
+        }
+        return wmtsVM;
+    }
+
+    // ── WMTS capabilities ────────────────────────────────────────
+    // Cesium doesn't read a WMTS's GetCapabilities document, so this does: its layers, and how each
+    // tile matrix set lines up with Cesium's tiling, which is where hand-written WMTS settings go wrong.
+
+    const kids = (el, name) => el ? [...el.children].filter(c => c.localName === name) : [];
+    const kid = (el, name) => kids(el, name)[0];
+    const text = (el, name) => kid(el, name)?.textContent.trim();
+    const escapeHtml = t => t.replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+
+    async function fetchXml(url) {
+        let res;
+        try { res = await fetch(url); }
+        catch (_) { throw new Error("Couldn't fetch it: the server is unreachable, or doesn't let other sites read it (CORS)."); }
+        if (!res.ok) throw new Error(`The server answered HTTP ${res.status}.`);
+        const doc = new DOMParser().parseFromString(await res.text(), "application/xml");
+        if (doc.documentElement.localName !== "Capabilities") throw new Error("That isn't a WMTS capabilities document.");
+        return doc;
+    }
+
+    // { url, title, provider, kvpUrl, layers: [{ id, title, styles, formats, sets, templates, dimensions,
+    // bbox }], matrixSets: { id: matrixSetFit() } }. `url` may also be the service's KVP endpoint.
+    async function readWmtsCapabilities(url) {
+        let doc;
+        try {
+            doc = await fetchXml(url);
+        } catch (err) {
+            if (/[?&]request=/i.test(url)) throw err;
+            url += (url.includes("?") ? "&" : "?") + "SERVICE=WMTS&REQUEST=GetCapabilities";
+            doc = await fetchXml(url).catch(() => { throw err; });
+        }
+        const root = doc.documentElement;
+        const contents = kid(root, "Contents");
+
+        // GetTile's KVP endpoint, for layers without a tile URL template
+        const getTile = kids(kid(root, "OperationsMetadata"), "Operation").find(op => op.getAttribute("name") === "GetTile");
+        const gets = getTile ? [...getTile.getElementsByTagNameNS("*", "Get")] : [];
+        const kvp = gets.find(g => /KVP/i.test(g.textContent)) || gets.find(g => !/RESTful/i.test(g.textContent));
+        const kvpUrl = kvp && (kvp.getAttributeNS("http://www.w3.org/1999/xlink", "href") || kvp.getAttribute("xlink:href"));
+
+        const matrixSets = {};
+        for (const tms of kids(contents, "TileMatrixSet")) matrixSets[text(tms, "Identifier")] = matrixSetFit(tms);
+
+        const layers = kids(contents, "Layer").map(l => {
+            const box = kid(l, "WGS84BoundingBox");
+            const lower = text(box, "LowerCorner")?.split(/\s+/).map(Number);
+            const upper = text(box, "UpperCorner")?.split(/\s+/).map(Number);
+            return {
+                id: text(l, "Identifier"),
+                title: text(l, "Title") || text(l, "Identifier"),
+                styles: kids(l, "Style").map(s => ({ id: text(s, "Identifier"), isDefault: s.getAttribute("isDefault") === "true" })),
+                formats: kids(l, "Format").map(f => f.textContent.trim()),
+                sets: kids(l, "TileMatrixSetLink").map(k => text(k, "TileMatrixSet")),
+                // tile URL templates that name a tile by matrix, row and column
+                templates: kids(l, "ResourceURL")
+                    .filter(r => (r.getAttribute("resourceType") || "tile") === "tile" && /\{TileMatrix\}.*\{TileRow\}.*\{TileCol\}|\{TileMatrix\}.*\{TileCol\}.*\{TileRow\}/.test(r.getAttribute("template")))
+                    .map(r => ({ format: r.getAttribute("format"), template: r.getAttribute("template") })),
+                dimensions: kids(l, "Dimension").map(d => ({ id: text(d, "Identifier"), default: text(d, "Default"), values: kids(d, "Value").map(v => v.textContent.trim()) })),
+                bbox: lower?.length === 2 && upper?.length === 2 ? [lower[0], lower[1], upper[0], upper[1]] : null,
+            };
+        });
+        const service = kid(root, "ServiceIdentification");
+        return { url, title: text(service, "Title"), provider: text(kid(root, "ServiceProvider"), "ProviderName"), kvpUrl, layers, matrixSets };
+    }
+
+    // Cesium's level n is 2^n × 2^n tiles over the Web Mercator square, or 2^(n+1) × 2^n tiles of
+    // 180 / 2^n degrees over longitude/latitude. A set fits if each of its matrices is one of those
+    // levels: tile size from the scale (0.28 mm pixels), starting at the scheme's top-left corner.
+    // Gives { ok, why, tilingScheme, labels, minimumLevel, maximumLevel, tileWidth, tileHeight }.
+    const MERCATOR_HALF = Math.PI * 6378137;                // 20037508.34 m
+    const MERCATOR_MAX_LAT = 85.0511287798;
+    const METRES_PER_DEGREE = 2 * Math.PI * 6378137 / 360;  // WMTS's for EPSG:4326
+    function matrixSetFit(tms) {
+        const crs = text(tms, "SupportedCRS") || "";
+        const geographic = /4326|CRS84/i.test(crs);
+        if (!geographic && !/3857|900913|3785|102100|102113/.test(crs)) {
+            return { ok: false, why: `its CRS (${crs}) is neither Web Mercator nor longitude/latitude, the two Cesium tiles in` };
+        }
+        const matrices = kids(tms, "TileMatrix").map(m => ({
+            id: text(m, "Identifier"), scale: Number(text(m, "ScaleDenominator")),
+            corner: (text(m, "TopLeftCorner") || "").split(/\s+/).map(Number),
+            width: Number(text(m, "TileWidth")), height: Number(text(m, "TileHeight")),
+        }));
+        const fit = { ok: true, why: null, tilingScheme: geographic ? "geographic" : "webmercator", labels: [],
+            tileWidth: matrices[0]?.width || 256, tileHeight: matrices[0]?.height || 256 };
+        const near = (a, b) => Math.abs(a - b) <= 1e-6 * Math.max(1, Math.abs(b));
+        for (const m of matrices) {
+            const span = m.scale * 0.00028 * m.width / (geographic ? METRES_PER_DEGREE : 1);
+            const level = Math.log2((geographic ? 180 : 2 * MERCATOR_HALF) / span);
+            if (level < -0.01) continue;    // coarser than Cesium's level 0, which it never asks for
+            const [x, y] = m.corner;
+            const corner = geographic ? (near(x, -180) && near(y, 90)) || (near(x, 90) && near(y, -180))
+                : near(x, -MERCATOR_HALF) && near(y, MERCATOR_HALF);
+            if (Math.abs(level - Math.round(level)) > 0.01 || !corner || m.width !== fit.tileWidth || m.height !== fit.tileHeight) {
+                return { ok: false, why: `its matrix "${m.id}" doesn't match a level of Cesium's ${geographic ? "geographic" : "Web Mercator"} tiling` };
+            }
+            fit.labels[Math.round(level)] = m.id;
+        }
+        const levels = Object.keys(fit.labels).map(Number);
+        if (!levels.length) return { ok: false, why: "it has no tile matrices" };
+        fit.minimumLevel = levels[0];
+        fit.maximumLevel = levels[levels.length - 1];
+        if (levels.length !== fit.maximumLevel - fit.minimumLevel + 1) return { ok: false, why: "it skips levels" };
+        return fit;
+    }
+
+    // sceneConfig.cesium.wmts for one layer of read capabilities, and warnings. `picks` chooses the
+    // style, format and tile matrix set, else the layer's default style, its first format with a tile
+    // URL template, and its first set that fits Cesium's tiling.
+    function wmtsFromCapabilities(caps, layerId, picks = {}) {
+        const layer = caps.layers.find(l => l.id === layerId);
+        const warnings = [];
+        const style = picks.style ?? (layer.styles.find(s => s.isDefault) || layer.styles[0])?.id ?? "default";
+        const format = picks.format ?? layer.templates[0]?.format ?? layer.formats[0] ?? "image/jpeg";
+        const url = layer.templates.find(t => t.format === format)?.template ?? caps.kvpUrl;
+        if (!url) warnings.push(`The capabilities give no tile URL for ${format}.`);
+        const set = picks.set ?? layer.sets.find(id => caps.matrixSets[id]?.ok) ?? layer.sets[0];
+        const fit = caps.matrixSets[set];
+        if (!fit) warnings.push(`The capabilities don't describe tile matrix set "${set}".`);
+        else if (!fit.ok) warnings.push(`Tile matrix set "${set}" won't line up in Cesium: ${fit.why}.`);
+
+        const w = { capabilities: caps.url, url, layer: layer.id, style, format, tileMatrixSetID: set };
+        if (fit?.ok) {
+            // labels only when they aren't just the level numbers
+            if (fit.labels.some((label, level) => label !== String(level))) w.tileMatrixLabels = fit.labels;
+            if (fit.minimumLevel > 0) w.minimumLevel = fit.minimumLevel;
+            w.maximumLevel = fit.maximumLevel;
+            if (fit.tilingScheme === "geographic") w.tilingScheme = "geographic";
+            if (fit.tileWidth !== 256) w.tileWidth = fit.tileWidth;
+            if (fit.tileHeight !== 256) w.tileHeight = fit.tileHeight;
+        }
+        if (layer.bbox) {
+            const maxLat = fit?.tilingScheme === "geographic" ? 90 : MERCATOR_MAX_LAT;
+            const [west, south, east, north] = layer.bbox;
+            const r = [Math.max(west, -180), Math.max(south, -maxLat), Math.min(east, 180), Math.min(north, maxLat)];
+            if (!(r[0] <= -179.9 && r[2] >= 179.9 && r[1] <= 0.1 - maxLat && r[3] >= maxLat - 0.1)) w.rectangle = r;
+        }
+        const dimensions = {};
+        for (const d of layer.dimensions) {
+            const value = d.default ?? (d.values.length === 1 && !d.values[0].includes("/") ? d.values[0] : undefined);
+            if (value !== undefined) dimensions[d.id] = value;
+        }
+        if (Object.keys(dimensions).length) w.dimensions = dimensions;
+        const credit = caps.provider || caps.title;
+        if (credit) w.credit = escapeHtml(credit);
+        return { wmts: w, warnings };
+    }
 
     // The backgrounds Potree paints; anything else ("none", "cesium", "") leaves its canvas see-through.
     const PAINTED = ["skybox", "gradient", "black", "white"];
@@ -145,18 +403,23 @@
             // Google's tiles may only be paired with Google's geocoder; it is hidden below.
             geocoder: s.photorealisticTiles ? Cesium.IonGeocodeProviderType.GOOGLE : false,
         };
-        if (!s.globe) {
-            options.globe = false;
-        } else {
-            options.baseLayer = s.imagery === "none" ? false
-                : s.imagery === "osm" ? new Cesium.ImageryLayer(new Cesium.OpenStreetMapImageryProvider({ url: "https://tile.openstreetmap.org/" }))
-                : Cesium.ImageryLayer.fromWorldImagery();
-            if (s.terrain) options.terrain = Cesium.Terrain.fromWorldTerrain();
-        }
+        if (!s.globe) options.globe = false;
+        else options.baseLayer = false;           // applyLayers() adds it
 
         const cv = new Cesium.Viewer(container(), options);
         if (cv.geocoder) cv.geocoder.container.style.display = "none";
         if (cv.scene.skyAtmosphere) cv.scene.skyAtmosphere.show = s.skyAtmosphere;
+        if (s.globe) {
+            // Made without imagery so it selects none of its own; applyLayers() picks the scene's.
+            layerPicker = new Cesium.BaseLayerPickerViewModel({
+                globe: cv.scene.globe,
+                terrainProviderViewModels: Cesium.createDefaultTerrainProviderViewModels(),
+            });
+            layerPicker.imageryProviderViewModels = Cesium.createDefaultImageryProviderViewModels();
+            watchImagery(cv);
+            applyLayers(s);
+        }
+        builtWith = s;
 
         if (s.photorealisticTiles) {
             Cesium.createGooglePhotorealistic3DTileset({ onlyUsingWithGoogleGeocoder: true })
@@ -169,6 +432,7 @@
     function destroy() {
         if (cesiumViewer && !cesiumViewer.isDestroyed()) cesiumViewer.destroy();
         cesiumViewer = window.cesiumViewer = null;
+        layerPicker = builtWith = imageryError = null;
         building = null;
     }
 
@@ -220,9 +484,19 @@
         });
     }
 
+    // Settings a built viewer takes without a rebuild (the height offset is read every frame).
+    const LIVE = ["imagery", "terrain", "heightOffset", "wmts"];
+
     // Rebuild with the current settings (Scene Setup calls this after a change). A zone on screen that
     // asks for the basemap gets it back once the settings work again, e.g. after a projection is fixed.
+    // Imagery and terrain changes are swapped on the globe instead.
     function reconfigure() {
+        const s = settings();
+        if (layerPicker && Object.keys(s).every(k => LIVE.includes(k) || s[k] === builtWith[k])) {
+            applyLayers(s);
+            builtWith = s;
+            return;
+        }
         const wanted = active || [...(window.newVisibleZones || [])].some(z => z.background === "cesium");
         destroy();
         transform = null;
@@ -357,8 +631,16 @@
         preview,
         describeProjection,
         measureHeightOffset,
+        imageryChoices,
+        imageryName,
+        WMTS_NAME,
+        wmtsProblem,
+        readWmtsCapabilities,
+        wmtsFromCapabilities,
+        load: loadCesium,
         get active() { return active; },
         get previewing() { return active && previewBackground !== null; },
         get error() { return error; },
+        get imageryError() { return imageryError; },
     };
 })();

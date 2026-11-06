@@ -29,6 +29,10 @@
     "use strict";
 
     const PANEL_ID = "sceneConfigPanel";
+    // Beside this script, wherever the page is (Imagery ▸ Web Map Tile Service ▸ Preset)
+    const WMTS_PRESETS_URL = document.currentScript?.src
+        ? new URL("wmts_presets.json", document.currentScript.src).href
+        : new URL("libs/custom/wmts_presets.json", location.href).href;
 
     // How a cloud added here looks until its material is captured — the same
     // defaults default_config.js gives auto-detected clouds.
@@ -291,6 +295,14 @@
     border-top: 1px solid rgba(255,255,255,0.07);
 }
 .sc-sub-title { font-size: 12px; font-weight: 600; color: #c9c9d6; }
+.sc-wmts { padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.07); }
+.sc-more > summary { cursor: pointer; list-style: none; color: #a0a0ad; font-size: 12px; user-select: none; }
+.sc-more > summary::-webkit-details-marker { display: none; }
+.sc-more > summary::before { content: "▸ "; }
+.sc-more[open] > summary::before { content: "▾ "; }
+.sc-more-body { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; }
+.sc-fields { display: flex; gap: 6px; }
+.sc-fields > .sc-input { flex: 1 1 0; min-width: 0; }
 
 /* ── Empty state / footer ─────────────────────────────────── */
 .sc-empty { display: flex; flex-direction: column; gap: 10px; padding: 4px 2px; line-height: 1.45; }
@@ -339,6 +351,7 @@
 
     // Zone saves, deletes and imports change the start-zone choices.
     document.addEventListener("zones-changed", () => render());
+    document.addEventListener("cesium-basemap-changed", () => render());   // e.g. the imagery didn't load
 
     // ══════════════════════════════════════════════════════════════
     //  Rendering
@@ -616,7 +629,7 @@
             }),
             "Cesium as default for all zones");
 
-        return section("cesium", "Cesium Basemap", c.projection ? (check.ok ? "set" : "check") : null,
+        const sec = section("cesium", "Cesium Basemap", c.projection ? (check.ok ? "set" : "check") : null,
             row("Projection", select([["utm", "UTM zone (WGS84)"], ["albers", "California Albers (NAD83)"], ["custom", "Custom proj4 string"]],
                 kind, e => pickKind(e.target.value), false)),
             projectionInput,
@@ -649,11 +662,14 @@
                 : el("p", { class: "sc-hint" }, "Clouds in heights above sea level sit under the basemap by the local geoid height " +
                     "(about +45 m in Florence) and slide against it as the view moves. With the basemap showing, Match basemap " +
                     "measures it from the clouds in view; it is most accurate from a few hundred metres up."),
-            row("3D Tiles", choice("photorealisticTiles", [["true", "Google Photorealistic"], ["false", "Off"]])),
+            row("3D Tiles", choice("photorealisticTiles", [["true", "Google Photorealistic"], ["false", "Off"]], true)),
             row("Globe", onOff("globe", true)),
             value("globe") && [
-                row("Imagery", choice("imagery", [["ion", "Cesium World Imagery"], ["osm", "OpenStreetMap"], ["none", "None"]])),
-                row("Terrain", onOff("terrain")),
+                imageryRows(value("imagery"), v => set("imagery", v, true)),
+                value("photorealisticTiles") && el("p", { class: "sc-hint" },
+                    "Google's 3D Tiles cover the globe, so its imagery only shows with 3D Tiles off."),
+                value("imagery") === "wmts" && wmtsBlock(c, set),
+                row("Terrain", choice("terrain", [["false", "WGS84 Ellipsoid"], ["true", "Cesium World Terrain"]])),
             ],
             row("Sky", onOff("skyAtmosphere")),
             row("Ion token", el("input", {
@@ -666,6 +682,238 @@
             el("p", { class: "sc-hint" }, users.length
                 ? `Shown behind the point clouds in: ${users.join(", ")}.`
                 : "Shown behind the point clouds in zones whose background is Cesium (Zone Management ▸ Edit ▸ Hierarchy & Behavior). No zone uses it yet."));
+        // Opening the section doesn't redraw it; drawing it open is what starts loading the imagery list.
+        if (value("globe")) sec.addEventListener("toggle", () => { if (sec.open && !imageryLoad && !CesiumBasemap.imageryChoices()) render(); });
+        return sec;
+    }
+
+    // The globe's imagery: the list Cesium's base layer picker offers, grouped as it groups them. Cesium
+    // is loaded for the list the first time the row is drawn in an open section.
+    let imageryLoad = null;     // { error } once loading Cesium for the list has failed
+    function imageryRows(current, onPick) {
+        const choices = CesiumBasemap.imageryChoices();
+        const name = CesiumBasemap.imageryName(current);
+        if (!choices && !imageryLoad && openSections.has("cesium")) {
+            imageryLoad = {};
+            CesiumBasemap.load().then(render, err => { imageryLoad.error = err.message || String(err); render(); });
+        }
+
+        const picked = choices?.find(c => c.name === name);
+        const categories = [...new Set((choices || []).map(c => c.category))];
+        const options = choices
+            ? categories.map(cat => el("optgroup", { label: cat },
+                choices.filter(c => c.category === cat).map(c => el("option", { value: c.name, selected: c === picked }, c.name))))
+            : name !== "none" && name !== "wmts" && el("option", { value: name, selected: true }, name);
+        const unknown = choices && name !== "none" && name !== "wmts" && !picked;
+        const imagery = el("select", { class: "sc-select", title: picked?.tooltip ?? "", onchange: e => onPick(e.target.value) },
+            el("option", { value: "none", selected: name === "none" }, "None"),
+            unknown && el("option", { value: name, selected: true }, `${name} (unknown)`),
+            options,
+            el("optgroup", { label: "Your own" },
+                el("option", { value: "wmts", selected: name === "wmts" }, CesiumBasemap.WMTS_NAME)));
+
+        // The first sentence of Cesium's description (its tooltip in the widget)
+        const about = picked && picked.tooltip.split("\n")[0].match(/^.*?[.!?](?=\s|$)|^.*/)[0];
+        return [
+            row("Imagery", imagery),
+            imageryLoad?.error ? el("div", { class: "sc-error" }, `Couldn't load Cesium for its imagery list: ${imageryLoad.error}`)
+                : !choices ? el("p", { class: "sc-hint" }, "Loading Cesium's imagery list…")
+                : unknown ? el("div", { class: "sc-error" }, `Cesium ${Cesium.VERSION} has no imagery called "${name}", so it shows ${choices[0].name}.`)
+                : CesiumBasemap.imageryError ? el("div", { class: "sc-error" }, CesiumBasemap.imageryError)
+                : about && el("p", { class: "sc-hint" }, about),
+        ];
+    }
+
+    // Any WMTS layer, as sceneConfig.cesium.wmts. Reading the service's capabilities lists its layers;
+    // picking one fills in everything, including how its tile matrix set maps onto Cesium's levels.
+    // Every field can also be typed, for a service without capabilities.
+    let wmtsUI = { url: null, caps: null, busy: false, error: null, warnings: [], filter: "", more: false };
+    let wmtsPresets = null;     // { loading } → { list } or { error }, fetched the first time the block shows
+    const WMTS_TEMPLATE_KEYS = ["style", "Style", "TileMatrixSet", "TileMatrix", "TileRow", "TileCol", "s"];
+    function wmtsBlock(c, set) {
+        const w = c.wmts || {};
+        // Changes to the settings; undefined, "" or an empty list/object leaves a setting out.
+        const put = changes => {
+            const next = { ...w };
+            for (const [k, v] of Object.entries(changes)) {
+                const empty = v === undefined || v === "" || (Array.isArray(v) ? !v.length : typeof v === "object" && !Object.keys(v).length);
+                if (empty) delete next[k];
+                else next[k] = v;
+            }
+            set("wmts", next, true);
+        };
+        const fill = (layerId, picks) => {
+            const r = CesiumBasemap.wmtsFromCapabilities(wmtsUI.caps, layerId, picks);
+            wmtsUI.warnings = r.warnings;
+            // a new layer starts from its own dimensions; another style, format or set keeps the ones typed
+            set("wmts", picks && w.dimensions ? { ...r.wmts, dimensions: w.dimensions } : r.wmts, true);
+        };
+        const input = (key, placeholder, props = {}) => el("input", {
+            class: "sc-input" + (props.mono ? " sc-mono" : ""), type: props.type || "text", spellcheck: false,
+            value: w[key] ?? "", placeholder, step: props.step,
+            onchange: e => {
+                const v = e.target.value.trim();
+                put({ [key]: props.type === "number" ? (v === "" ? undefined : Number(v)) : v });
+            },
+        });
+
+        // ── Presets: whole settings for well-known layers (wmts_presets.json) ──
+        if (!wmtsPresets) {
+            wmtsPresets = { loading: true };
+            fetch(WMTS_PRESETS_URL)
+                .then(res => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+                .then(data => { wmtsPresets = { list: data.presets }; }, err => { wmtsPresets = { error: err.message }; })
+                .then(() => render());
+        }
+        const presets = wmtsPresets.list || [];
+        // the preset these settings come from, whatever dimensions (dates) have been typed since
+        const preset = presets.find(p => p.wmts.url === w.url && p.wmts.layer === w.layer && p.wmts.tileMatrixSetID === w.tileMatrixSetID);
+        const presetSelect = el("select", {
+            class: "sc-select",
+            onchange: e => {
+                const p = presets[e.target.value];
+                if (!p) return;
+                if (wmtsUI.caps?.url !== p.wmts.capabilities) wmtsUI.caps = null;
+                Object.assign(wmtsUI, { url: null, error: null, warnings: [] });
+                set("wmts", structuredClone(p.wmts), true);
+            },
+        },
+            el("option", { value: "", selected: !preset }, wmtsPresets.loading ? "Loading presets…" : "None: the settings below"),
+            [...new Set(presets.map(p => p.group))].map(group => el("optgroup", { label: group },
+                presets.map((p, i) => p.group === group && el("option", { value: i, selected: p === preset }, p.name)))));
+
+        // ── Capabilities ──
+        const capsInput = el("input", {
+            class: "sc-input sc-mono", type: "url", spellcheck: false, placeholder: "…/WMTSCapabilities.xml",
+            value: wmtsUI.url ?? w.capabilities ?? "",
+            onkeydown: e => { if (e.key === "Enter") read(); },
+        });
+        const read = async () => {
+            const url = capsInput.value.trim();
+            if (!url) return;
+            Object.assign(wmtsUI, { url, busy: true, error: null, caps: null, warnings: [] });
+            render();
+            try { wmtsUI.caps = await CesiumBasemap.readWmtsCapabilities(url); }
+            catch (err) { wmtsUI.error = err.message; }
+            wmtsUI.busy = false;
+            render();
+        };
+        const caps = wmtsUI.caps;
+        const layer = caps?.layers.find(l => l.id === w.layer);
+
+        let capsRows = null;
+        if (caps) {
+            const layerSelect = el("select", { class: "sc-select", onchange: e => fill(e.target.value) },
+                !layer && el("option", { value: "", selected: true, disabled: true }, `Pick one of ${caps.layers.length} layers`),
+                caps.layers.map(l => el("option", { value: l.id, selected: l === layer, title: l.id }, l.title)));
+            const applyFilter = () => {
+                const q = wmtsUI.filter.toLowerCase();
+                for (const o of layerSelect.options) if (o.value) o.hidden = !!q && !`${o.textContent} ${o.value}`.toLowerCase().includes(q);
+            };
+            applyFilter();
+            const sets = layer && layer.sets.map(id => [id, id + (caps.matrixSets[id]?.ok ? "" : " (doesn't fit Cesium)")]);
+            capsRows = [
+                el("p", { class: "sc-hint" }, [caps.title, caps.provider].filter(Boolean).join(" · ") || "Read."),
+                caps.layers.length > 8 && el("input", {
+                    class: "sc-input", type: "search", placeholder: "Filter layers", value: wmtsUI.filter,
+                    oninput: e => { wmtsUI.filter = e.target.value; applyFilter(); },
+                }),
+                row("Layer", layerSelect),
+                layer && [
+                    row("Style", select(layer.styles.map(s => [s.id, s.id]), w.style, e => fill(w.layer, { style: e.target.value }), false)),
+                    row("Format", select([...new Set([...layer.templates.map(t => t.format), ...layer.formats])].map(f => [f, f]), w.format,
+                        e => fill(w.layer, { format: e.target.value }), false)),
+                    row("Matrix set", select(sets, w.tileMatrixSetID, e => fill(w.layer, { set: e.target.value }), false)),
+                ],
+            ];
+        }
+
+        // ── The settings themselves ──
+        const dimensionText = Object.entries(w.dimensions || {}).map(([k, v]) => `${k}=${v}`).join("\n");
+        const dimensionHints = (layer?.dimensions || []).map(d => {
+            const first = d.values[0]?.split("/")[0], last = d.values[d.values.length - 1]?.split("/");
+            const range = d.values.length && (d.values.length > 1 || d.values[0].includes("/")) ? `${first} to ${last[1] ?? last[0]}` : d.values.join(", ");
+            // services like NASA's GIBS default to their newest day, which is usually still being filled in
+            const recent = /^time$/i.test(d.id) && Date.parse(d.default) > Date.now() - 2 * 86400e3;
+            return `${d.id}: ${range || "any"}${d.default ? ` (default ${d.default})` : ""}` +
+                (recent ? ". The newest days often have little or no imagery yet; an earlier date shows more." : "");
+        });
+        // {Time} and the like in the URL need a dimension to fill them
+        const unfilled = [...(w.url || "").matchAll(/\{([^}]+)\}/g)].map(m => m[1])
+            .filter(k => !WMTS_TEMPLATE_KEYS.includes(k) && !(w.dimensions && k in w.dimensions));
+        const problem = CesiumBasemap.wmtsProblem(w);
+
+        const pair = (a, b) => el("div", { class: "sc-fields" }, a, b);
+        const rect = w.rectangle || [];
+        const rectInputs = ["W", "S", "E", "N"].map((p, i) => el("input", {
+            class: "sc-input", type: "number", step: "any", placeholder: p, value: rect[i] ?? "",
+            onchange: () => {
+                const v = rectInputs.map(r => r.value.trim());
+                if (v.every(x => x === "")) put({ rectangle: undefined });
+                else if (v.every(x => x !== "" && isFinite(x))) put({ rectangle: v.map(Number) });
+            },
+        }));
+        const more = el("details", { class: "sc-more", open: wmtsUI.more, ontoggle: e => { wmtsUI.more = e.target.open; } },
+            el("summary", {}, "More WMTS options"),
+            el("div", { class: "sc-more-body" },
+                row("Matrix labels", el("textarea", {
+                    class: "sc-input sc-mono sc-textarea", rows: 2, spellcheck: false, placeholder: "the level numbers",
+                    title: "The TileMatrix identifier of each level, from level 0, separated by commas",
+                    value: (w.tileMatrixLabels || []).map(l => l ?? "").join(", "),
+                    onchange: e => {
+                        const v = e.target.value.trim();
+                        put({ tileMatrixLabels: v ? v.split(",").map(l => l.trim() || null) : undefined });
+                    },
+                })),
+                row("Tiling", select([["webmercator", "Web Mercator (EPSG:3857)"], ["geographic", "Geographic (EPSG:4326)"]],
+                    w.tilingScheme ?? "webmercator", e => put({ tilingScheme: e.target.value === "geographic" ? "geographic" : undefined }), false)),
+                row("Levels", pair(input("minimumLevel", "min 0", { type: "number", step: 1 }), input("maximumLevel", "max: none", { type: "number", step: 1 }))),
+                row("Tile size", pair(input("tileWidth", "256 px", { type: "number", step: 1 }), input("tileHeight", "256 px", { type: "number", step: 1 }))),
+                row("Rectangle", el("div", { class: "sc-fields" }, rectInputs)),
+                el("p", { class: "sc-hint" }, "Rectangle: the area the layer covers, in degrees (west, south, east, north). Blank: the whole tiling."),
+                row("Subdomains", el("input", {
+                    class: "sc-input sc-mono", type: "text", spellcheck: false, placeholder: "abc", title: "For {s} in the URL: each letter, or a comma-separated list",
+                    value: Array.isArray(w.subdomains) ? w.subdomains.join(", ") : w.subdomains ?? "",
+                    onchange: e => {
+                        const v = e.target.value.trim();
+                        put({ subdomains: v.includes(",") ? v.split(",").map(s => s.trim()).filter(Boolean) : v });
+                    },
+                })),
+                row("Credit", input("credit", "shown in the basemap's credits"))));
+
+        return el("div", { class: "sc-sub sc-wmts" },
+            el("div", { class: "sc-sub-title" }, CesiumBasemap.WMTS_NAME),
+            row("Preset", presetSelect),
+            wmtsPresets.error ? el("div", { class: "sc-error" }, `Couldn't load the presets: ${wmtsPresets.error}`)
+                : preset && el("p", { class: "sc-hint" }, preset.note),
+            row("Capabilities", el("div", { class: "sc-range-row" }, capsInput,
+                el("button", { class: "sc-btn", disabled: wmtsUI.busy, onclick: read }, wmtsUI.busy ? "Reading…" : "Read"))),
+            wmtsUI.error && el("div", { class: "sc-error" }, wmtsUI.error),
+            capsRows ?? el("p", { class: "sc-hint" }, "Read a service's capabilities to pick one of its layers, or fill in the fields below."),
+            wmtsUI.warnings.map(text => el("div", { class: "sc-error" }, text)),
+            row("Tile URL", el("textarea", {
+                class: "sc-input sc-mono sc-textarea", rows: 3, spellcheck: false, value: w.url ?? "",
+                placeholder: "https://…/{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}.png, or the GetTile endpoint",
+                onchange: e => put({ url: e.target.value.trim() }),
+            })),
+            !layer && [
+                row("Layer", input("layer", "layer identifier", { mono: true })),
+                row("Style", input("style", "default", { mono: true })),
+                row("Format", input("format", "image/jpeg", { mono: true })),
+                row("Matrix set", input("tileMatrixSetID", "TileMatrixSet identifier", { mono: true })),
+            ],
+            row("Dimensions", el("textarea", {
+                class: "sc-input sc-mono sc-textarea", rows: 2, spellcheck: false, value: dimensionText, placeholder: "Time=2024-06-01",
+                title: "Values for the layer's dimensions, one name=value per line",
+                onchange: e => put({ dimensions: Object.fromEntries(e.target.value.split("\n")
+                    .map(line => line.split("=")).filter(([k, ...v]) => k.trim() && v.length)
+                    .map(([k, ...v]) => [k.trim(), v.join("=").trim()])) }),
+            })),
+            dimensionHints.length > 0 && el("p", { class: "sc-hint" }, dimensionHints.join(" · ")),
+            unfilled.length > 0 && el("div", { class: "sc-error" },
+                `The tile URL has ${unfilled.map(k => `{${k}}`).join(", ")}, so Dimensions needs a value for ${unfilled.length > 1 ? "each" : "it"}.`),
+            problem && el("p", { class: "sc-hint" }, problem),
+            more);
     }
 
     // ── Start zones ──────────────────────────────────────────────
