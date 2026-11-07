@@ -56706,10 +56706,23 @@
 	                }
 
 	                let Type = attribute.array.constructor;
+	                let source = attribute.array;
+
+	                // Not in 1.8.2: gps-time reaches the GPU as a 32-bit float — Potree 2 scales it to 0..1 and keeps
+	                // the doubles in potree.preciseBuffer; COPC subtracts the node's earliest time (node.gpsTime).
+	                // Export real times as float64. Other attributes stay as drawn, so brush edits are kept.
+	                let gpsOffset = 0;
+	                if (attributeName === "gps-time") {
+	                    if (attribute.potree && attribute.potree.preciseBuffer) {
+	                        source = attribute.potree.preciseBuffer;
+	                    } else if (node.gpsTime && Number.isFinite(node.gpsTime.offset)) {
+	                        gpsOffset = node.gpsTime.offset;
+	                    }
+	                    Type = Float64Array;
+	                }
 
 	                let filteredBuffer = new Type(numElements * accepted.length);
 
-	                let source = attribute.array;
 	                let target = filteredBuffer;
 
 	                for (let i = 0; i < accepted.length; i++) {
@@ -56721,6 +56734,10 @@
 	                    let sub = source.subarray(start, end);
 
 	                    target.set(sub, i * numElements);
+	                }
+
+	                if (gpsOffset !== 0) {
+	                    for (let i = 0; i < target.length; i++) target[i] += gpsOffset;
 	                }
 
 	                points.data[attributeName] = filteredBuffer;
@@ -66229,7 +66246,7 @@ void main() {
 			// system identifier o:26 l:32
 
 			// generating software o:58 l:32
-			setString('Potree 1.7', 58, buffer);
+			setString('Potree 1.8', 58, buffer);
 
 			// file creation day of year o:90 l:2
 			// file creation year o:92 l:2

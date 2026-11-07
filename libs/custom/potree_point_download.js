@@ -7,10 +7,10 @@
  * Description:
  *   Tiled in-browser download of points within selected clipping volumes
  *   from Potree-based viewers. Splits the user's selection into a grid of
- *   smaller LAS tiles to handle very large point clouds without exhausting
- *   memory. Uses the File System Access API when available so all tiles
- *   land in a single user-chosen folder; otherwise falls back to staggered
- *   individual downloads.
+ *   smaller LAZ (or LAS) tiles to handle very large point clouds without
+ *   exhausting memory. Uses the File System Access API when available so all
+ *   tiles land in a single user-chosen folder; otherwise falls back to
+ *   staggered individual downloads.
  *
  *   A "Level of Detail" slider lets the user cap octree traversal depth.
  *   Lower depths produce smaller, faster, lower-resolution downloads.
@@ -22,9 +22,11 @@
  *   3. Call openDownloadPanel() from your viewer UI (e.g. a toolbar button).
  *
  * Dependencies:
- *   - Potree (viewer.scene, LASExporter, Points)
+ *   - Potree (viewer.scene, Points)
  *   - Three.js (THREE.Box3, THREE.Vector3, etc.)
- *   - Use potree.js with the 64-bit position array fix.
+ *   - las-laz-js in ../las-laz-js (imported on the first download)
+ *   - Use potree.js with the 64-bit position array fix, and the DownloadRequest
+ *     gps-time fix for real GPS times (without it they are left out).
  */
 
 /* =====================================================================
@@ -186,6 +188,37 @@ style.textContent += `
     line-height: 1.3;
 }
 
+/* ---------- File format ---------- */
+
+.dl-format {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: #d4d4d4;
+    font-size: 13px;
+    margin: 0 0 10px;
+}
+.dl-format-toggle {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 7px;
+}
+.dl-format-opt {
+    padding: 5px 12px;
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    color: #c8c8d0;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background .15s ease, color .15s ease;
+}
+.dl-format-opt[aria-pressed="true"] { background: rgba(99, 90, 245, 0.9); color: white; }
+.dl-format-opt:hover:not(:disabled):not([aria-pressed="true"]) { background: rgba(255,255,255,0.12); }
+.dl-format-opt:disabled { opacity: 0.45; cursor: not-allowed; }
+
 /* ---------- Progress ---------- */
 
 .dl-progress-wrap { margin-top: 10px; }
@@ -329,6 +362,15 @@ function resetDownloadState() {
     DownloadState.filesWritten = 0;
 }
 
+// "laz" or "las"; kept across panel open/close.
+let downloadFormat = "laz";
+
+// las-laz-js writes the tiles (trimmed to its writer, see libs/las-laz-js/VENDORED.md).
+// Resolve it against this script rather than the page: the atlas sites load
+// this file by absolute URL from their own folders.
+const LAS_LAZ_URL = new URL("../las-laz-js/src/write/writeLas.js",
+    document.currentScript?.src || new URL("libs/custom/", document.baseURI)).href;
+
 /* =====================================================================
    PANEL OPEN / CLOSE
    ===================================================================== */
@@ -357,7 +399,7 @@ function openDownloadPanel() {
             <span class="download-close" title="Close">&times;</span>
         </div>
         <div class="download-subtitle">
-            Selections are split into a grid of LAS tiles for memory safety.
+            Selections are split into a grid of tiles for memory safety.
         </div>
         <div id="download-function"></div>
     `;
@@ -574,6 +616,16 @@ function initializeDownloadUI() {
                 <div id="dl-depth-hint" class="dl-slider-hint" style="margin-top:8px; line-height:1.6;"></div>
             </div>
 
+            <div class="dl-format">
+                <span class="dl-slider-label">File format</span>
+                <div class="dl-format-toggle" role="group" aria-label="File format">
+                    <button type="button" class="dl-format-opt" data-format="laz"
+                        title="LASzip-compressed LAS: the same points in a much smaller file">LAZ (compressed)</button>
+                    <button type="button" class="dl-format-opt" data-format="las"
+                        title="Uncompressed LAS">LAS</button>
+                </div>
+            </div>
+
             <div class="dl-progress-wrap">
                 <div class="dl-progress"><div id="dl-bar" class="dl-bar"></div></div>
                 <div id="dl-status" class="dl-status">Ready.</div>
@@ -612,6 +664,15 @@ function initializeDownloadUI() {
         valEl.textContent = slider.value;
     });
 
+    const formatBtns = root.querySelectorAll(".dl-format-opt");
+    const showFormat = () => formatBtns.forEach(b =>
+        b.setAttribute("aria-pressed", String(b.dataset.format === downloadFormat)));
+    formatBtns.forEach(b => b.addEventListener("click", () => {
+        downloadFormat = b.dataset.format;
+        showFormat();
+    }));
+    showFormat();
+
     // Fill the hint immediately; otherwise it stays blank until the slider moves.
     if (slider) updateDepthHint(slider.value);
 }
@@ -642,6 +703,7 @@ function setActive(isActive) {
         const el = document.getElementById(id);
         if (el) el.disabled = isActive;
     });
+    document.querySelectorAll(".dl-format-opt").forEach(b => { b.disabled = isActive; });
     const cancel = document.getElementById("dl-cancel-btn");
     if (cancel) cancel.style.display = isActive ? "block" : "none";
 }
@@ -814,22 +876,133 @@ function getMaxDepthFromScene() {
 }
 
 /* =====================================================================
+   LAS / LAZ ENCODING
+   ===================================================================== */
+
+// las-laz-js is plain ES modules; import it on first use, and again after a failure.
+let lasLazModule = null;
+function loadLasLaz() {
+    if (!lasLazModule) {
+        lasLazModule = import(LAS_LAZ_URL).catch(err => {
+            lasLazModule = null;
+            throw err;
+        });
+    }
+    return lasLazModule;
+}
+
+// Attribute names differ by loader: Potree 2 and COPC use LAS-style names with
+// spaces (COPC says "source id"), Potree 1.x uses camelCase.
+const LAS_COLUMN_SOURCES = [
+    { column: "intensity",       Type: Uint16Array, names: ["intensity"] },
+    { column: "returnNumber",    Type: Uint8Array,  names: ["return number", "returnNumber"] },
+    { column: "numberOfReturns", Type: Uint8Array,  names: ["number of returns", "numberOfReturns"] },
+    { column: "classification",  Type: Uint8Array,  names: ["classification"] },
+    { column: "pointSourceId",   Type: Uint16Array, names: ["point source id", "source id", "pointSourceID"] },
+];
+
+// Potree.Points (interleaved world positions, attributes as drawn, so brush
+// edits included) -> the per-field columns las-laz-js writes.
+function pointsToLasColumns(points) {
+    const n    = points.numPoints;
+    const data = points.data;
+    const pos  = data.position;
+
+    const cols = { count: n, x: new Float64Array(n), y: new Float64Array(n), z: new Float64Array(n) };
+    for (let i = 0; i < n; i++) {
+        cols.x[i] = pos[3 * i + 0];
+        cols.y[i] = pos[3 * i + 1];
+        cols.z[i] = pos[3 * i + 2];
+    }
+
+    // Scalars arrive as Float32 holding whole numbers; From() truncates exactly.
+    for (const { column, Type, names } of LAS_COLUMN_SOURCES) {
+        const src = names.map(k => data[k]).find(a => a && a.length === n);
+        if (src) cols[column] = Type.from(src);
+    }
+
+    // Only real times. A potree.js without the DownloadRequest gps-time fix
+    // (the atlas sites run their own) passes the GPU's 32-bit offsets instead.
+    const gps = data["gps-time"];
+    if (gps instanceof Float64Array && gps.length === n) cols.gpsTime = gps;
+
+    // Loaders keep 8-bit colour; x257 maps 0..255 onto LAS's 0..65535.
+    const rgba   = data.rgba ?? data.color;
+    const stride = rgba ? rgba.length / n : 0;
+    if (stride === 3 || stride === 4) {
+        cols.red   = new Uint16Array(n);
+        cols.green = new Uint16Array(n);
+        cols.blue  = new Uint16Array(n);
+        for (let i = 0; i < n; i++) {
+            cols.red[i]   = rgba[stride * i + 0] * 257;
+            cols.green[i] = rgba[stride * i + 1] * 257;
+            cols.blue[i]  = rgba[stride * i + 2] * 257;
+        }
+    }
+    return cols;
+}
+
+// Smallest standard layout that holds every column. LAS 1.2 formats 0-3 keep
+// the class in 5 bits, so a class above 31 needs LAS 1.4 (format 6, 7 with RGB).
+function chooseLasLayout(cols) {
+    const rgb = !!cols.red;
+    let maxClass = 0;
+    if (cols.classification) {
+        for (const c of cols.classification) if (c > maxClass) maxClass = c;
+    }
+    if (maxClass > 31) return { version: "1.4", pointFormat: rgb ? 7 : 6 };
+    return { version: "1.2", pointFormat: (cols.gpsTime ? 1 : 0) + (rgb ? 2 : 0) };
+}
+
+// LASzip predicts each point from the one before it, but Potree hands points over
+// in octree sampling order. Sorting by GPS time restores scan order: a third
+// smaller LAZ on aerial lidar (D6NS3R) for ~0.2 s per 600k points.
+function sortColumnsByGpsTime(cols) {
+    const gps   = cols.gpsTime;
+    const order = new Uint32Array(cols.count);
+    for (let i = 0; i < order.length; i++) order[i] = i;
+    order.sort((a, b) => gps[a] - gps[b]);
+
+    for (const k of Object.keys(cols)) {
+        const src = cols[k];
+        if (k === "count" || !src) continue;
+        const dst = new src.constructor(src.length);
+        for (let i = 0; i < order.length; i++) dst[i] = src[order[i]];
+        cols[k] = dst;
+    }
+}
+
+// One tile's points as LAS or LAZ file bytes.
+async function encodeTile(points, format) {
+    const { writeLas } = await loadLasLaz();
+    const cols = pointsToLasColumns(points);
+    if (format === "laz" && cols.gpsTime) sortColumnsByGpsTime(cols);
+    return writeLas(cols, {
+        ...chooseLasLayout(cols),
+        compress: format === "laz",
+        systemId: "EXTRACTION",
+        software: "Potree 1.8 / las-laz-js",
+    });
+}
+
+/* =====================================================================
    TILED DOWNLOAD CORE
    ===================================================================== */
 
 /**
  * Split `fullBox` into a grid of tiles and download each tile as a
- * separate LAS file (one per visible point cloud per tile).
+ * separate LAS or LAZ file (one per visible point cloud per tile).
  *
  * @param {THREE.Box3}     fullBox      - world-space selection box
  * @param {?FileSystemDirectoryHandle} dirHandle - or null for browser fallback
- * @param {object}         opts         - tilesX/Y/Z, maxDepth, targetPointsPerTile, namePrefix
+ * @param {object}         opts         - tilesX/Y/Z, maxDepth, targetPointsPerTile, namePrefix, format ("laz" | "las")
  */
 async function downloadBoxInTiles(fullBox, dirHandle, opts = {}) {
     const {
         maxDepth             = getMaxDepthFromScene(),
         targetPointsPerTile  = 5_000_000,
         namePrefix           = "selection",
+        format               = "laz",
     } = opts;
 
     const visiblePCs = viewer.scene.pointclouds.filter(p => p.visible);
@@ -891,7 +1064,7 @@ async function downloadBoxInTiles(fullBox, dirHandle, opts = {}) {
 
                 const written = await downloadSingleTile(
                     visiblePCs, tileBox, maxDepth,
-                    namePrefix, ix, iy, iz, dirHandle, hiddenClassLUT
+                    namePrefix, ix, iy, iz, dirHandle, hiddenClassLUT, format
                 );
                 tileManifest.push(...written);
 
@@ -910,7 +1083,7 @@ async function downloadBoxInTiles(fullBox, dirHandle, opts = {}) {
     // just another download prompt for the user).
     if (dirHandle && tileManifest.length > 0 && !DownloadState.cancelled) {
         try {
-            await writeManifest(dirHandle, namePrefix, fullBox, grid, tileManifest, maxDepth);
+            await writeManifest(dirHandle, namePrefix, fullBox, grid, tileManifest, maxDepth, format);
         } catch (e) {
             console.warn("Failed to write manifest:", e);
         }
@@ -1032,11 +1205,11 @@ function filterChunkByClassification(chunk, hiddenSet) {
 }
 
 /**
- * Download one tile box as one LAS file per visible point cloud.
+ * Download one tile box as one LAS/LAZ file per visible point cloud.
  * Returns a list of {pointcloud, filename, points, bounds} entries
  * for the manifest.
  */
-function downloadSingleTile(pointclouds, tileBox, maxDepth, namePrefix, ix, iy, iz, dirHandle, hiddenClassLUT) {
+function downloadSingleTile(pointclouds, tileBox, maxDepth, namePrefix, ix, iy, iz, dirHandle, hiddenClassLUT, format) {
     return new Promise((resolve) => {
         const written = [];
         let pending = pointclouds.length;
@@ -1066,11 +1239,14 @@ function downloadSingleTile(pointclouds, tileBox, maxDepth, namePrefix, ix, iy, 
                 onFinish: async () => {
                     if (points.numPoints > 0) {
                         try {
-                            console.log(points);
-                            const buffer    = Potree.LASExporter.toLAS(points);
+                            setStatus(
+                                `Tile ${DownloadState.completedTiles + 1} of ${DownloadState.totalTiles}` +
+                                ` · writing ${fmt(points.numPoints)} points as ${format.toUpperCase()}…`
+                            );
+                            const buffer    = await encodeTile(points, format);
                             const safeCloud = (pc.name || "cloud").replace(/[^\w\-]/g, "_");
                             const safePref  = namePrefix.replace(/[^\w\-]/g, "_");
-                            const filename  = `${safePref}_${safeCloud}_x${ix}_y${iy}_z${iz}.las`;
+                            const filename  = `${safePref}_${safeCloud}_x${ix}_y${iy}_z${iz}.${format}`;
 
                             await writeOutput(dirHandle, filename, buffer);
                             DownloadState.filesWritten++;
@@ -1098,12 +1274,13 @@ function downloadSingleTile(pointclouds, tileBox, maxDepth, namePrefix, ix, iy, 
     });
 }
 
-async function writeManifest(dirHandle, namePrefix, fullBox, grid, tiles, maxDepth) {
+async function writeManifest(dirHandle, namePrefix, fullBox, grid, tiles, maxDepth, format) {
     const manifest = {
         source:           tiles[0]?.pointcloud || "unknown",
         doi:              window.doi || null,
         citation:         window.projectCitation || null,
         generated:        new Date().toISOString(),
+        format,
         max_depth:        maxDepth,
         selection_bounds_world: [
             [fullBox.min.x, fullBox.min.y, fullBox.min.z],
@@ -1140,8 +1317,9 @@ async function onDownloadClick(button, mode) {
         return;
     }
 
-    // Snapshot the user's chosen detail level NOW (before any awaits).
+    // Snapshot the user's chosen detail level and format NOW (before any awaits).
     const userMaxDepth = readDepthSlider();
+    const format       = downloadFormat;
 
     // Folder picker / fallback prompt — must run during the user gesture.
     let dirHandle = null;
@@ -1172,7 +1350,7 @@ async function onDownloadClick(button, mode) {
 
     // Pass `maxDepth` only if the slider gave us a real number; otherwise
     // let downloadBoxInTiles pick its default via getMaxDepthFromScene().
-    const sharedOpts = userMaxDepth != null ? { maxDepth: userMaxDepth } : {};
+    const sharedOpts = userMaxDepth != null ? { maxDepth: userMaxDepth, format } : { format };
 
     try {
         if (mode === "selected") {
