@@ -6,7 +6,7 @@
  * Description:
  *   A floating window for editing window.sceneConfig (scene_config.js): the
  *   dataset (vtype, DOI), viewer settings, starting camera, start zones,
- *   classification edits and point clouds that a schema-2 zones.json describes. Most values are read
+ *   classification edits, point clouds and custom script that a schema-2 zones.json describes. Most values are read
  *   from the live viewer rather than typed: set the scene up in the viewer,
  *   then "Use current" / "Capture" here. Framed, placed and made draggable by
  *   panel_window_manager.js like the other tool windows.
@@ -232,6 +232,7 @@
 .sc-error:empty { display: none; }
 .sc-ok { color: #86efac; }
 .sc-textarea { resize: vertical; min-height: 52px; line-height: 1.35; }
+.sc-code { min-height: 140px; white-space: pre; overflow: auto; tab-size: 4; }
 .sc-proj { font-size: 11px; overflow-wrap: anywhere; }
 
 /* ── Start zones ──────────────────────────────────────────── */
@@ -375,6 +376,7 @@
                 startZonesSection(sc),
                 editsSection(sc),
                 cloudsSection(sc),
+                scriptSection(sc),
             ].filter(Boolean));
             footer.replaceChildren(
                 el("button", { class: "sc-btn sc-primary", onclick: () => exportZonesToJSON() }, "Export zones.json"),
@@ -974,6 +976,42 @@
                 el("button", { class: "sc-icon-btn sc-danger", title: "Remove", onclick: () => { list.splice(i, 1); render(); } }, "×"))),
             el("div", { class: "sc-actions" }, el("button", { class: "sc-btn", onclick: addRow }, "+ Add URL")),
             el("p", { class: "sc-hint" }, "Brush edit files loaded when the scene opens. Relative URLs load from the dataset folder."));
+    }
+
+    // ── Custom script ────────────────────────────────────────────
+    // sceneConfig.script, run when the scene loads from zones.json. Run now tries it on the scene as it is.
+    let scriptRun = null;       // the sceneConfig whose script "Run now" last ran
+    function scriptSection(sc) {
+        const lines = sc.script.trim() ? sc.script.split("\n").length : 0;
+        const err = sc.scriptError;
+        // The function wrapper adds two lines above the script, so the stack's line is two too far down
+        const line = err?.stack?.match(/sceneConfig\.script\.js:(\d+)/)?.[1] - 2;
+        const errText = (err instanceof Error ? `${err.name}: ${err.message}` : String(err)) + (line > 0 ? ` (line ${line})` : "");
+
+        const runBtn = el("button", {
+            class: "sc-btn", disabled: !lines,
+            onclick: async () => {
+                runBtn.disabled = true;
+                runBtn.textContent = "Running…";
+                await sc.runScript();
+                scriptRun = sc;
+                render();
+            },
+        }, "Run now");
+
+        return section("script", "Custom script", err ? "error" : lines ? `${lines} line${lines === 1 ? "" : "s"}` : null,
+            el("textarea", {
+                class: "sc-input sc-mono sc-textarea sc-code", rows: 10, spellcheck: false, wrap: "off",
+                value: sc.script, placeholder: "// e.g.\nviewer.setMoveSpeed(5);",
+                oninput: e => { sc.script = e.target.value; runBtn.disabled = !sc.script.trim(); },
+            }),
+            el("div", { class: "sc-actions" }, runBtn),
+            err ? el("div", { class: "sc-error" }, `${scriptRun === sc ? "Failed" : "Failed when the scene loaded"}: ${errText}`)
+                : scriptRun === sc && el("p", { class: "sc-hint sc-ok" }, "Ran without errors."),
+            el("p", { class: "sc-hint" },
+                "JavaScript run each time the scene loads from zones.json, after its point clouds and zones are set up. " +
+                "It can use await and the page's globals (viewer, Potree, THREE, zones, sceneConfig). " +
+                "Run now runs it on the scene as it is, so anything it adds is added again."));
     }
 
     // ── Point clouds ─────────────────────────────────────────────

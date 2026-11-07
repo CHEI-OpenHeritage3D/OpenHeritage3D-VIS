@@ -320,6 +320,29 @@ style.textContent += `
     padding: 9px 4px;
     font-size: 12px;      /* keeps "Move PC" on one line at the 300px minimum */
 }
+/* Switches between this panel and Align by Point Pairs (rigid_body_transformation.js), which never
+   share the screen; each has one in its header row, which under panel_window_manager.js is the
+   panel's top line (the title moves to the frame). */
+.transform-header { flex-wrap: wrap; gap: 8px; }
+.transform-align-btn {
+    margin-right: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 11px;
+    background: rgba(79,70,229,0.2);
+    color: #e4e2ff;
+    border: 1px solid rgba(110,107,255,0.55);
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, transform .1s ease;
+}
+.transform-align-btn:hover { background: rgba(79,70,229,0.36); border-color: rgba(147,140,255,0.85); }
+.transform-align-btn:active { transform: scale(0.97); }
+.transform-align-btn .transform-align-icon { font-size: 14px; line-height: 1; }
 
 /* Manual value entry */
 .transform-field { margin-bottom: 10px; }
@@ -717,14 +740,18 @@ function toggleTransformControls(pc) {
     })
 }
 
-function openTransformPanel() {
+// `pc`, if given, is selected on opening: Align by Point Pairs passes the cloud it was moving.
+function openTransformPanel(pc) {
     const existing = document.getElementById("transformPanel");
 
     if (existing) {
-        existing.classList.remove("open");
-        setTimeout(() => existing.remove(), 150);
+        closeTransformWindow();
         return;
     }
+
+    // Never open beside Align by Point Pairs. It asks first if closing would lose picked pairs;
+    // if it stays open, this panel stays shut.
+    if (window.requestClosePointPairAlignPanel && !window.requestClosePointPairAlignPanel()) return;
 
     initPCStartingTransforms();
 
@@ -737,6 +764,11 @@ function openTransformPanel() {
     panel.innerHTML = `
     <div class="transform-header">
         <span class="transform-title">Transform Point Cloud</span>
+        ${typeof window.openPointPairAlignPanel === "function" ? `
+        <button class="transform-align-btn" id="open-pair-align-btn" type="button"
+            title="Switch to Align by Point Pairs: align a point cloud to another by picking matching points">
+            <span class="transform-align-icon">⇄</span>Align by Point Pairs
+        </button>` : ""}
         <div class="transform-header-right">
             <span id="transform-coupled-status" class="coupled-pill decoupled">
                 Decoupled
@@ -845,15 +877,32 @@ function openTransformPanel() {
     document.body.appendChild(panel);
 
     // Close button
-    panel.querySelector(".transform-close").onclick = () => {
-        panel.classList.remove("open");
-        closeTransformPanel();
-        setTimeout(() => panel.remove(), 150);
-    };
+    panel.querySelector(".transform-close").onclick = closeTransformWindow;
 
     panel.classList.add("open");
 
+    // Switches to Align by Point Pairs (rigid_body_transformation.js), which closes this panel and takes
+    // the selected cloud; the sites that share this file without it get no button
+    const pairAlignBtn = panel.querySelector("#open-pair-align-btn");
+    if (pairAlignBtn) pairAlignBtn.onclick = () => window.openPointPairAlignPanel(selectedPC);
+
     initializeTransformPCSelector();
+
+    const id = pc && Object.keys(window.pointcloudMap).find(k => window.pointcloudMap[k] === pc);
+    if (id) {
+        const pcSelect = document.getElementById("pc-select");
+        pcSelect.value = id;
+        pcSelect.dispatchEvent(new Event("change"));
+    }
+}
+
+// Closes the panel the way its × does: the gizmo goes too. Align by Point Pairs calls it on opening.
+function closeTransformWindow() {
+    const panel = document.getElementById("transformPanel");
+    if (!panel) return;
+    panel.classList.remove("open");
+    closeTransformPanel();
+    setTimeout(() => panel.remove(), 150);
 }
 
 function toggleExportPanel() {
@@ -1225,4 +1274,5 @@ function removeAllAxisHelpers(){
 }
 
 window.openTransformPanel = openTransformPanel;
+window.closeTransformWindow = closeTransformWindow;
 export { openTransformPanel };

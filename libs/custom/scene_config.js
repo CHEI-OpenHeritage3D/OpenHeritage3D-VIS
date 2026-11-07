@@ -1,12 +1,12 @@
 // SceneConfig — the `sceneConfig` block of a schema-2 zones.json.
 //
 // A schema-2 zones.json is a complete description of a scene:
-//   { "schema": 2, "sceneConfig": { vtype, doi, viewer, camera, cesium, startZones, classificationEdits, pointclouds }, "zones": [...] }
+//   { "schema": 2, "sceneConfig": { vtype, doi, viewer, camera, cesium, startZones, classificationEdits, pointclouds, script }, "zones": [...] }
 // sceneConfig says what gets loaded and how it looks by default; zones group those clouds and refer to
 // them by id. The id is the key in `pointclouds`, normally the cloud's folder name, and becomes
 // pointcloud.name at runtime. It never changes once the cloud is added; `label` is free text.
 // vtype and doi name the dataset the scene belongs to (index.html's ?vtype= and ?doi=); relative URLs
-// resolve against that dataset's potree/ folder.
+// resolve against that dataset's potree/ folder. `script` is JavaScript run once the scene has loaded.
 //
 // An old-style zones.json (a bare array) still loads through config.js — see index.html.
 class SceneConfig {
@@ -22,6 +22,9 @@ class SceneConfig {
         this.startZones = json.startZones || [];
         this.classificationEdits = json.classificationEdits || [];
         this.pointclouds = json.pointclouds || {};       // id -> { label, url, visible, opacity, transform, material }
+        // A hand-written file may give the script as an array of lines
+        this.script = Array.isArray(json.script) ? json.script.join("\n") : json.script || "";
+        this.scriptError = null;                         // what the last run of the script threw
         this.loaded = new Map();                         // id -> Potree point cloud
 
         // Opacity was briefly stored inside `material`; it sits beside `visible` now.
@@ -405,6 +408,24 @@ class SceneConfig {
         return SceneConfig._defaultMaterial || (SceneConfig._defaultMaterial = new Potree.PointCloudMaterial());
     }
 
+    // ── Custom script ────────────────────────────────────────
+
+    // Runs the script (or `code`) as the body of an async function, so it can `await`, and it sees the
+    // page's globals (viewer, Potree, THREE, zones, sceneConfig). What it throws is logged and kept in
+    // scriptError rather than passed on, so a broken script doesn't stop the scene loading.
+    async runScript(code = this.script) {
+        this.scriptError = null;
+        if (!code.trim()) return;
+        try {
+            const AsyncFunction = (async () => {}).constructor;
+            // sourceURL names it in the console and the debugger's sources
+            await new AsyncFunction(`${code}\n//# sourceURL=sceneConfig.script.js`)();
+        } catch (err) {
+            this.scriptError = err;
+            console.error("[SceneConfig] the scene's script failed:", err);
+        }
+    }
+
     // ── Serialising ──────────────────────────────────────────
 
     // Built from the current values rather than `raw`: the UI edits viewerSettings, camera and so on,
@@ -419,6 +440,7 @@ class SceneConfig {
         out.startZones = this.startZones;
         out.classificationEdits = this.classificationEdits.filter(Boolean);
         out.pointclouds = this.pointclouds;
+        if (this.script.trim()) out.script = this.script;
         for (const [key, value] of Object.entries(this.raw)) {
             if (!SceneConfig.KEYS.includes(key)) out[key] = value;
         }
@@ -426,7 +448,7 @@ class SceneConfig {
     }
 }
 
-SceneConfig.KEYS = ["vtype", "doi", "viewer", "camera", "cesium", "startZones", "classificationEdits", "pointclouds"];
+SceneConfig.KEYS = ["vtype", "doi", "viewer", "camera", "cesium", "startZones", "classificationEdits", "pointclouds", "script"];
 
 // material.weights key -> PointCloudMaterial property (the composite attribute's weights)
 SceneConfig.WEIGHTS = {
@@ -489,11 +511,15 @@ async function initSceneFromConfig(data, zonesURL, keepCamera = false) {
     // a blank entry would resolve to zones.json itself
     for (const url of sc.classificationEdits.filter(Boolean)) importEditsAny(sc.resolveURL(url));
     updateMaterialMenuOnStart();
+
+    // Last, so it finds the clouds and zones in place (edit files may still be loading)
+    await sc.runScript();
 }
 
 // The sceneConfig of an imported zones.json, merged into the scene's: clouds the scene's config doesn't
 // have are added and loaded, and its Cesium basemap settings fill in the ones the scene's leave out;
-// everything else in it (and every cloud and setting the scene already has) stays as it is.
+// everything else in it (and every cloud and setting the scene already has) stays as it is; its script
+// isn't run.
 // A scene still loaded from config.js is captured first, so its own clouds stay in the config.
 // `dataset` ({ vtype, doi }) is where the file came from, for a file that doesn't say; otherwise it is
 // taken to be this scene's. Returns the ids added.

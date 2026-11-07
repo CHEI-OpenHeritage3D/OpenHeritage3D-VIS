@@ -56,14 +56,17 @@
     //                teardown logic still runs.
     //    w         – default frame width (px)
     //    minW/minH – minimum resize dimensions (px)
+    //    swapsWith – id of a panel this one takes turns with (opening either closes the
+    //                other); it opens where that one was, rather than in a fresh slot
     // ══════════════════════════════════════════════════════════════
     const REGISTRY = {
         brushPanel:       { title: "Classification Brush",       titleSel: ".brush-title",     closeSel: ".brush-close",     w: 360, minW: 300, minH: 180 },
         gridPanel:        { title: "Work Distribution",          titleSel: ".brush-title",     closeSel: ".brush-close",     w: 300, minW: 260, minH: 160 },
         ledgerAnalysisPanel: { title: "Ledger Analysis",         titleSel: ".brush-title",     closeSel: ".brush-close",     w: 400, minW: 340, minH: 200 },
         downloadPanel:    { title: "Download Points",            titleSel: ".download-title",  closeSel: ".download-close",  w: 380, minW: 300, minH: 160 },
-        transformPanel:   { title: "Transform Point Cloud",      titleSel: ".transform-title", closeSel: ".transform-close", w: 340, minW: 300, minH: 200 },
+        transformPanel:   { title: "Transform Point Cloud",      titleSel: ".transform-title", closeSel: ".transform-close", w: 340, minW: 300, minH: 200, swapsWith: "pairAlignPanel" },
         exportPanel:      { title: "Export Transform Code",      titleSel: ".transform-title", closeSel: ".transform-close", w: 360, minW: 300, minH: 180 },
+        pairAlignPanel:   { title: "Align by Point Pairs",       titleSel: ".transform-title", closeSel: ".transform-close", w: 360, minW: 320, minH: 200, swapsWith: "transformPanel" },
         zoneCreationMenu: { title: "Zone Creation & Management", titleSel: ":scope > h3",      closeSel: ".zone-form-close", w: 400, minW: 320, minH: 200, fixup: fixupZonePanel },
         zoneSearchMenu:   { title: "Zones",                      titleSel: ":scope > h3",      closeSel: ".zone-form-close", w: 400, minW: 320, minH: 200, fixup: fixupZonePanel },
         searchCameraMenu: { title: "Camera Search",              titleSel: ":scope > h3",      closeSel: ".zone-form-close", w: 400, minW: 320, minH: 200 },
@@ -635,7 +638,13 @@
         frame.style.visibility = "hidden";
         const maxH = window.innerHeight - TOP - BOTTOM;
         const h = Math.min(frame.offsetHeight || 240, maxH);
-        const slot = computeSlot(opts.w || 360, h);
+        // The panel it swaps with is still fading out: take its place, top-right corners matched
+        // (offset*, not the bounding rect, which the fade's scale() shrinks)
+        const prev = opts.swapsWith && document.getElementById(opts.swapsWith);
+        const prevFrame = prev && prev.closest(".pwm-frame");
+        const slot = prevFrame
+            ? { x: Math.max(LEFT, prevFrame.offsetLeft + prevFrame.offsetWidth - (opts.w || 360)), y: prevFrame.offsetTop }
+            : computeSlot(opts.w || 360, h);
         frame.style.left = slot.x + "px";
         frame.style.top = slot.y + "px";
         frame.style.zIndex = ++zTop;
