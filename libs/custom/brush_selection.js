@@ -2234,7 +2234,7 @@ window.brushState = {
 // Nodes to load concurrently *during a stroke*. Potree's steady-state default is
 // 4; strokes are latency-bound, so more in-flight range requests hide round-trip
 // time. HTTP/2 multiplexing makes 16–32 safe on most static hosts.
-const BRUSH_MAX_NODES_LOADING = 16;
+const BRUSH_MAX_NODES_LOADING = 24;
 
 const _loadAwaiters = new Map();  // node -> [resolve, ...]
 const _loadQueue    = [];         // nodes ready to start (slot-permitting)
@@ -2600,6 +2600,113 @@ async function countSubtreeFromFile(root) {
     return { nodes, points };
 }
 
+// ── Stroke profiler: the part of a skipped subtree a stroke covers ──
+// A node skipped because it can't change is only partly covered, so its whole subtree
+// would overstate the work skipped. The covered part is every node whose box meets the
+// brush sphere (a child's box lies inside its parent's, so a node that misses the sphere
+// takes its subtree with it), counted from the file like the subtrees above. Boxes of
+// nodes not in memory are derived from the nearest in-memory ancestor's box. Depends on
+// the sphere, so nothing is memoized.
+const _coveredBox = new THREE.Box3();
+
+function _boxMeetsSphere(box, c, radiusSq) {
+    return boxDistSqLocal(box, c.x, c.y, c.z) <= radiusSq;
+}
+
+// A 2.0 chunk's records are breadth-first, each node's children in child-index order,
+// so a record's box follows from its parent's by createChildAABB's split (z=1, y=2, x=4).
+// `box` is the chunk root's (record 0's) box.
+async function _countCoveredChunk20(geom, offset, size, box, c, radiusSq) {
+    const view = await _fetchChunk20(geom, offset, size);
+    const n = Math.floor(view.byteLength / 22);
+    const b = new Float64Array(6 * n);              // min xyz, max xyz per record
+    b.set([box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z]);
+    let next = 1, nodes = 0, points = 0;
+    const nested = [];
+    for (let i = 0; i < n; i++) {
+        const o = 22 * i, k = 6 * i;
+        _coveredBox.min.set(b[k], b[k + 1], b[k + 2]);
+        _coveredBox.max.set(b[k + 3], b[k + 4], b[k + 5]);
+        const hit = _boxMeetsSphere(_coveredBox, c, radiusSq);
+        if (view.getUint8(o) === 2) {               // proxy: its subtree is its own chunk
+            if (hit) nested.push(_countCoveredChunk20(geom, view.getBigInt64(o + 6, true),
+                view.getBigInt64(o + 14, true), _coveredBox.clone(), c, radiusSq));
+            continue;
+        }
+        if (hit) {
+            nodes++;
+            if (view.getBigInt64(o + 14, true) !== 0n) points += view.getUint32(o + 2, true);   // #1125
+        }
+        const mask = view.getUint8(o + 1);
+        for (let ci = 0; ci < 8; ci++) {
+            if (!(mask & (1 << ci)) || next >= n) continue;
+            const q = 6 * next++;
+            for (let a = 0; a < 3; a++) {           // a = 0, 1, 2 → x, y, z
+                const half = (b[k + 3 + a] - b[k + a]) / 2;
+                const upper = ci & (4 >> a);        // x = 4, y = 2, z = 1
+                b[q + a]     = upper ? b[k + a] + half : b[k + a];
+                b[q + 3 + a] = upper ? b[k + 3 + a]    : b[k + 3 + a] - half;
+            }
+        }
+    }
+    for (const r of await Promise.all(nested)) { nodes += r.nodes; points += r.points; }
+    return { nodes, points };
+}
+
+// COPC keys are absolute ("d-x-y-z"), so any node's box follows from one in-memory
+// ancestor's key and box: a depth d node is a cell of the ancestor's box split 2^(d−d0) ways.
+function _copcKeyBox(name, anchorKey, anchorBox, out) {
+    const [d, x, y, z] = name.split("-").map(Number);
+    const [d0, x0, y0, z0] = anchorKey;
+    const s = 2 ** (d - d0);
+    const mn = anchorBox.min, mx = anchorBox.max;
+    const ex = (mx.x - mn.x) / s, ey = (mx.y - mn.y) / s, ez = (mx.z - mn.z) / s;
+    out.min.set(mn.x + (x - x0 * s) * ex, mn.y + (y - y0 * s) * ey, mn.z + (z - z0 * s) * ez);
+    out.max.set(out.min.x + ex, out.min.y + ey, out.min.z + ez);
+    return out;
+}
+
+async function _countCoveredPageCopc(geom, page, anchorKey, anchorBox, c, radiusSq) {
+    const { nodes, pages } = await _fetchPageCopc(geom, page);
+    let count = 0, points = 0;
+    for (const [name, info] of Object.entries(nodes)) {
+        if (!_boxMeetsSphere(_copcKeyBox(name, anchorKey, anchorBox, _coveredBox), c, radiusSq)) continue;
+        count++; points += info.pointCount;
+    }
+    const nested = await Promise.all(Object.entries(pages)
+        .filter(([name]) => _boxMeetsSphere(_copcKeyBox(name, anchorKey, anchorBox, _coveredBox), c, radiusSq))
+        .map(([, pg]) => _countCoveredPageCopc(geom, pg, anchorKey, anchorBox, c, radiusSq)));
+    for (const r of nested) { count += r.nodes; points += r.points; }
+    return { nodes: count, points };
+}
+
+/**
+ * Nodes and points under `root`, root included, whose boxes meet the sphere at `c`
+ * (pointcloud-local) with squared radius `radiusSq`, per the file's full hierarchy.
+ */
+async function countCoveredFromFile(root, c, radiusSq) {
+    let nodes = 0, points = 0;
+    const pending = [];
+    (function walk(node) {
+        if (!_boxMeetsSphere(node.boundingBox, c, radiusSq)) return;
+        if (node.nodeType === 2) {                          // 2.0 proxy: chunk not parsed yet
+            pending.push(_countCoveredChunk20(node.octreeGeometry, node.hierarchyByteOffset,
+                node.hierarchyByteSize, node.boundingBox, c, radiusSq));
+            return;
+        }
+        const page = node.owner && !node.nodeinfo && node.owner.pages[window.Copc.Key.toString(node.key)];
+        if (page) {                                         // COPC node whose page isn't loaded
+            pending.push(_countCoveredPageCopc(node.owner, page, node.key, node.boundingBox, c, radiusSq));
+            return;
+        }
+        nodes++;
+        points += geoNodeNumPoints(node);
+        for (let i = 0; i < 8; i++) if (node.children[i]) walk(node.children[i]);
+    })(root);
+    for (const r of await Promise.all(pending)) { nodes += r.nodes; points += r.points; }
+    return { nodes, points };
+}
+
 /**
  * Edge length (pointcloud-local) and depth of the deepest node containing the brush
  * center: the octree's finest cell where the stroke landed. Unlike the subtree counts
@@ -2632,7 +2739,7 @@ async function reportStrokeProfile(p, pointcloud, centerWorld, radius, strokeMs)
         }
         return total;
     };
-    let bulk = null, same = null, leaf = null;
+    let bulk = null, same = null, leaf = null, covered = null;
     await Promise.all([
         Promise.all([sum(p.bulkRoots), sum(p.sameRoots)]).then(
             (r) => { [bulk, same] = r; },
@@ -2640,13 +2747,20 @@ async function reportStrokeProfile(p, pointcloud, centerWorld, radius, strokeMs)
         leafExtentAt(pointcloud, centerWorld).then(
             (r) => { leaf = r; },
             (e) => console.warn("[brush] profiler: leaf lookup failed, leaf rows omitted", e)),
+        p.skipRoots && Promise.all(p.skipRoots.map(n => countCoveredFromFile(n, p.center, p.radiusSq))).then(
+            (r) => { covered = { nodes: 0, points: 0 }; for (const x of r) { covered.nodes += x.nodes; covered.points += x.points; } },
+            (e) => console.warn("[brush] profiler: hierarchy fetch failed, skipped-subtree rows omitted", e)),
     ]);
     const ok = bulk !== null;
     // Enclosed = descendants only; the implicit roots themselves were visited.
     const enclosed = ok ? bulk.nodes - p.bulkRoots.length + same.nodes - p.sameRoots.length : null;
+    // Covered below skipped = likewise descendants only. Without BRUSH_PROFILE_SKIPPED the
+    // subtrees skipped as already this class are missing from the total and naive rows.
+    const coveredBelow = covered ? covered.nodes - p.skipRoots.length : null;
+    const totalsOk = ok && (!p.skipRoots || covered !== null);
     // Naive all-explicit pass: every point of every node the stroke covers gets checked.
-    const naive  = ok ? p.points + bulk.points + same.points : null;
-    const noGeom = p.visited - p.bulkRoots.length - p.sameRoots.length - p.partial;
+    const naive  = totalsOk ? p.points + bulk.points + same.points + (covered?.points ?? 0) : null;
+    const noGeom = p.visited - p.bulkRoots.length - p.sameRoots.length - p.partial - p.partialSame;
     // Leaf extent in world units, like the radius (the pointcloud's scale is uniform).
     const leafW  = leaf ? leaf.w * pointcloud.matrixWorld.getMaxScaleOnAxis() : null;
 
@@ -2655,23 +2769,27 @@ async function reportStrokeProfile(p, pointcloud, centerWorld, radius, strokeMs)
         ["leaf extent at center",             leaf ? +leafW.toPrecision(4) : null],
         ["leaf depth at center",              leaf ? leaf.depth : null],
         ["radius / leaf extent",              leaf ? +(radius / leafW).toPrecision(3) : null],
-        ["nodes: total (visited + enclosed)", ok ? p.visited + enclosed : null],
+        [covered ? "nodes: total (visited + enclosed + covered)" : "nodes: total (visited + enclosed)",
+                                              totalsOk ? p.visited + enclosed + (coveredBelow ?? 0) : null],
         ["nodes: visited",                    p.visited],
         ["↳ bulk-marked implicit",            p.bulkRoots.length],
         ["↳ already implicit, skipped",       p.sameRoots.length],
+        ["↳ already this class, not entered", p.partialSame || null],
         ["↳ explicit per-point",              p.partial],
         ["↳ …of which fully inside",          p.partialInside],
         ["↳ no geometry",                     noGeom || null],
         ["nodes: enclosed below implicit",    enclosed],
+        ["nodes: covered below skipped",      coveredBelow],
         ["nodes: force-loaded",               p.loaded],
         ["points: classified",                ok ? bulk.points + p.changed : null],
         ["↳ implicit (bulk subtrees)",        ok ? bulk.points : null],
         ["↳ explicit (changed)",              p.changed],
         ["points: skipped, already implicit", ok ? same.points : null],
+        ["points: skipped, already this class", covered ? covered.points : null],
         ["points: checked per-point",         p.points],
         ["points: naive all-explicit checks", naive],
-        ["points: checks saved",              ok ? naive - p.points : null],
-        ["points: checks saved %",            ok && naive > 0 ? +(100 * (naive - p.points) / naive).toFixed(1) : null],
+        ["points: checks saved",              naive !== null ? naive - p.points : null],
+        ["points: checks saved %",            naive > 0 ? +(100 * (naive - p.points) / naive).toFixed(1) : null],
         ["time: stroke ms",                   +strokeMs.toFixed(1)],
         // Summed across concurrent awaits, so it can exceed wall time — read it as
         // "aggregate node-load wait", not wall-clock network time.
@@ -2692,10 +2810,14 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
   // of the octree the implicit subtrees stand for, per-point checks vs a naive
   // all-explicit pass, and wall time spent awaiting network loads vs total. Zero
   // cost when disabled. Logs one table per stroke (reportStrokeProfile).
+  // Also set window.BRUSH_PROFILE_SKIPPED = true to count the part of each subtree
+  // skipped as already this class that the stroke covers. Off by default: the count
+  // reads hierarchy after the stroke is timed, but the next stroke waits for it.
   const _prof = window.BRUSH_PROFILE ? {
-      t0: performance.now(), visited: 0, loaded: 0, partial: 0, partialInside: 0,
+      t0: performance.now(), visited: 0, loaded: 0, partial: 0, partialInside: 0, partialSame: 0,
       netMs: 0, points: 0, changed: 0,
-      bulkRoots: [], sameRoots: []   // implicit subtree roots: newly bulk-marked / already this class
+      bulkRoots: [], sameRoots: [],  // implicit subtree roots: newly bulk-marked / already this class
+      skipRoots: window.BRUSH_PROFILE_SKIPPED ? [] : null   // partly covered, already this class
   } : null;
 
   // #5: Coalesce per-node classification-buffer uploads. Instead of setting
@@ -2774,6 +2896,7 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
     const _pcScale       = Math.sqrt(_e[0]*_e[0] + _e[1]*_e[1] + _e[2]*_e[2]) || 1; // uniform scale
     const _radiusLocal   = radius / _pcScale;
     const _radiusLocalSq = _radiusLocal * _radiusLocal;
+    if (_prof) { _prof.center = _centerPcLocal; _prof.radiusSq = _radiusLocalSq; }
 
     let toClip = false;
     const clipVolumes = [];
@@ -2862,6 +2985,16 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
         }
 
         // ── Partial intersection ──
+        // Nothing can change: the baseline is already the target class, and neither
+        // overrides of this node nor entries below it say otherwise. Skip the node and
+        // its subtree without loading them, as the enclosed-node shortcut above does.
+        if (effectiveBaseline === classification
+            && !getOverrides(ownEntry)
+            && descendantEntryNames(nodeName).length === 0) {
+            if (_prof) { _prof.partialSame++; _prof.skipRoots?.push(geoNode); }
+            return;
+        }
+
         let justLoaded = false;
         if (!geoNode.loaded) {
             flushDirty();              // paint resident work done so far during the wait
@@ -4015,7 +4148,7 @@ function openBrushPanel() {
         if (brushState.sphere) brushState.sphere.visible = false;
         return;
     }
-    viewer.setPointBudget(10*1000*1000);
+    viewer.setPointBudget(5*1000*1000);
     scaleBrushByZoom();
     showAllClassifications();
     switchPCMaterial();
@@ -5300,31 +5433,103 @@ document.addEventListener("DOMContentLoaded", () => {
     let _pendingMouseEvent = null;
     let _pickScheduled = false;
 
+    let _lastPrecisePickAt = -Infinity;
+    let _hasPickAnchor = false;
+
+    const _pickAnchor = new THREE.Vector3();
+    const _previewNormal = new THREE.Vector3();
+    const _previewPlane = new THREE.Plane();
+    const _previewPoint = new THREE.Vector3();
+
+    function showBrushSphere(position) {
+        brushState.sphere.position.copy(position);
+        const r = brushState.radius;
+        brushState.sphere.scale.set(r, r, r);
+        brushState.sphere.visible = true;
+    }
+
+    // Estimate the cursor's 3D position without a GPU readback.
+    function updateApproximateBrushPosition(ev) {
+        if (!_hasPickAnchor) return false;
+
+        const camera = viewer.scene.getActiveCamera();
+        const rect = viewer.renderer.domElement.getBoundingClientRect();
+        const ray = getPickRay(ev, camera, rect);
+
+        camera.getWorldDirection(_previewNormal);
+
+        _previewPlane.setFromNormalAndCoplanarPoint(
+            _previewNormal,
+            _pickAnchor
+        );
+
+        const point = ray.intersectPlane(
+            _previewPlane,
+            _previewPoint
+        );
+
+        if (!point) return false;
+
+        showBrushSphere(point);
+        return true;
+    }
+
     viewer.renderer.domElement.addEventListener('mousemove', (event) => {
         if (!brushState.active || !brushState.sphere) return;
-        _pendingMouseEvent = event;          // mousemove events aren't pooled — safe to hold
+
+        _pendingMouseEvent = event;
         if (_pickScheduled) return;
+
         _pickScheduled = true;
 
         requestAnimationFrame(() => {
             _pickScheduled = false;
+
             const ev = _pendingMouseEvent;
             if (!ev || !brushState.active || !brushState.sphere) return;
 
-            const result = pickAt(ev);
-            if (result) {
-                brushState.sphere.position.copy(result.hit.position);
-                const r = brushState.radius;
-                brushState.sphere.scale.set(r, r, r);
-                brushState.sphere.visible = true;
-                if (brushState.painting && ev.buttons === 1) paintStroke(result);
-                if (_shiftHeld) updateOrientedImageHover(ev.clientX, ev.clientY);
+            const now = performance.now();
+
+            const pickInterval = brushState.strokeInProgress
+                ? 100   // 10 Hz during asynchronous classification
+                : 33;   // ~30 Hz otherwise
+
+            const shouldPick =
+                now - _lastPrecisePickAt >= pickInterval;
+
+            if (shouldPick) {
+                _lastPrecisePickAt = now;
+
+                const result = pickAt(ev);
+
+                if (result) {
+                    _pickAnchor.copy(result.hit.position);
+                    _hasPickAnchor = true;
+
+                    showBrushSphere(result.hit.position);
+
+                    // Paint only at accurately picked positions.
+                    if (brushState.painting && (ev.buttons & 1)) {
+                        paintStroke(result);
+                    }
+
+                    if (_shiftHeld) {
+                        updateOrientedImageHover(ev.clientX, ev.clientY);
+                    }
+                } else {
+                    _hasPickAnchor = false;
+                    brushState.sphere.visible = false;
+
+                    if (_shiftHeld) hideOrientedImageTooltip();
+                }
             } else {
-                brushState.sphere.visible = false;
-                if (_shiftHeld) hideOrientedImageTooltip();
+                // Cheap approximation between accurate picks.
+                // Does NOT initiate classification.
+                updateApproximateBrushPosition(ev);
             }
         });
     });
+
 
     viewer.renderer.domElement.addEventListener('click', (event) => {
         if (event.shiftKey) {
