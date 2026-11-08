@@ -28,6 +28,11 @@ style.textContent+=`.misc-panel {
     background: #4f46e5;
 }
 
+.misc-item:focus-visible {
+    outline: 2px solid #a5b4fc;
+    outline-offset: -2px;
+}
+
 #viewer-title {
     top: 10px;
     position: absolute;
@@ -322,6 +327,10 @@ document.addEventListener("DOMContentLoaded", () => {
 			...(window.ClassLegend?.toggle ? [{
 				name: "Class Legend", id: "classLegendBtn", onClick: () => window.ClassLegend.toggle()
 			}] : []),
+			// nor is gamepad_controls.js
+			...(window.GamepadControls?.toggleHelp ? [{
+				name: "Gamepad Controls", id: "gamepadControlsBtn", onClick: () => window.GamepadControls.toggleHelp()
+			}] : []),
 			// class_hover_picker.js isn't loaded by every page that uses this menu
 			// ...(typeof togglePointInspector === "function" ? [{
 			// 	name: "Point Inspector", id: "pointInspectorBtn", onClick: () => togglePointInspector()
@@ -341,24 +350,31 @@ document.addEventListener("DOMContentLoaded", () => {
 
 
 
-function toggleMiscToolsMenu() {
+// e: the click on the Tools button, if that's what opened it
+function toggleMiscToolsMenu(e) {
     let existing = document.getElementById("miscToolsMenu");
+    const toolsBtn = document.getElementById("miscToolsButton");
 
     if (existing) {
         existing.classList.remove("open");
         setTimeout(() => existing.remove(), 200);
+        if (toolsBtn) toolsBtn.setAttribute("aria-expanded", "false");
         return;
     }
 
     const menu = document.createElement("div");
     menu.id = "miscToolsMenu";
     menu.className = "misc-panel";
+    menu.setAttribute("role", "menu");
+    menu.setAttribute("aria-label", "Tools");
     
     miscButtonsList.forEach(button => {
         const btn = document.createElement("div");
         btn.className = "misc-item";
         btn.id = button.id;
         btn.innerHTML = button.name;
+        btn.setAttribute("role", "menuitem");
+        btn.tabIndex = 0;
 
         btn.addEventListener("click", () => {
             button.onClick();
@@ -378,6 +394,26 @@ function toggleMiscToolsMenu() {
     //     <div class="misc-item" id="abc">More Options Coming Soon</div>
     // `;
     // <div class="misc-item" id="seeThroughDemoBtn">See-Through</div>
+    // Keyboard: Enter or Space picks a tool, the arrows move, Escape goes back to the Tools button
+    menu.addEventListener("keydown", (ev) => {
+        const items = [...menu.querySelectorAll(".misc-item")];
+        const i = items.indexOf(document.activeElement);
+        if ((ev.key === "Enter" || ev.key === " ") && i >= 0) {
+            ev.preventDefault();
+            items[i].click();
+        } else if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+            ev.preventDefault();
+            const down = ev.key === "ArrowDown";
+            const next = i < 0 ? (down ? 0 : items.length - 1) : (i + (down ? 1 : items.length - 1)) % items.length;
+            if (items[next]) items[next].focus();
+        } else if (ev.key === "Escape") {
+            ev.preventDefault();
+            ev.stopPropagation();
+            toggleMiscToolsMenu();
+            if (toolsBtn) toolsBtn.focus();
+        }
+    });
+
     document.body.appendChild(menu);
 
     // position below the button, right-aligned with the toolbar
@@ -390,6 +426,13 @@ function toggleMiscToolsMenu() {
     menu.style.top = (r.bottom + 6) + "px";
     menu.style.left = (rightEdge - menu.offsetWidth) + "px";
     menu.classList.add("open");
+    if (toolsBtn) toolsBtn.setAttribute("aria-expanded", "true");
+
+    // Opened from the keyboard or a controller (a click with no mouse behind it): onto the first tool
+    if (e && e.detail === 0) {
+        const first = menu.querySelector(".misc-item");
+        if (first) first.focus({ preventScroll: true });
+    }
 
     // === Close when clicking outside ===
     setTimeout(() => {
@@ -406,6 +449,7 @@ function toggleMiscToolsMenu() {
             if (!menuEl.contains(event.target) && !btnEl.contains(event.target)) {
                 menuEl.classList.remove("open");
                 setTimeout(() => menuEl.remove(), 200);
+                btnEl.setAttribute("aria-expanded", "false");
                 document.removeEventListener("click", handleClickOutside);
             }
         };

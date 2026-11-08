@@ -20,6 +20,7 @@
 	    const collapsed = toolbar.classList.toggle("collapsed");
 
 	    toggleBtn.textContent = collapsed ? "▲" : "▼";
+	    toggleBtn.setAttribute("aria-expanded", String(!collapsed));
 
 	    // Reposition title after animation completes
 	    setTimeout(positionTitle, 350);
@@ -32,10 +33,10 @@
 					Measure
 				</div>
 				<div>
-					<img name="action_point_inspector" src="images/icons/point-inspector.svg" class="annotation-action-icon" title="Point Inspector (I)" style="width: 2em; height: auto;"/>
-					<img name="action_measure_distance" src="${Potree.resourcePath}/icons/distance.svg" class="annotation-action-icon" style="width: 2em; height: auto;"/>
-					<img name="action_measure_height" src="${Potree.resourcePath}/icons/height.svg" class="annotation-action-icon" style="width: 2em; height: auto;"/>
-					<img name="action_reset_tools" src="${Potree.resourcePath}/icons/reset_tools.svg" class="annotation-action-icon" style="width: 2em; height: auto;"/>
+					<img name="action_point_inspector" src="images/icons/point-inspector.svg" class="annotation-action-icon" role="button" tabindex="0" aria-label="Point Inspector" title="Point Inspector (I)" style="width: 2em; height: auto;"/>
+					<img name="action_measure_distance" src="${Potree.resourcePath}/icons/distance.svg" class="annotation-action-icon" role="button" tabindex="0" aria-label="Measure distance" title="Measure distance" style="width: 2em; height: auto;"/>
+					<img name="action_measure_height" src="${Potree.resourcePath}/icons/height.svg" class="annotation-action-icon" role="button" tabindex="0" aria-label="Measure height" title="Measure height" style="width: 2em; height: auto;"/>
+					<img name="action_reset_tools" src="${Potree.resourcePath}/icons/reset_tools.svg" class="annotation-action-icon" role="button" tabindex="0" aria-label="Remove all measurements" title="Remove all measurements" style="width: 2em; height: auto;"/>
 				</div>
 			</span>
 
@@ -47,7 +48,7 @@
 				</div>
 				<div>
 					<center>
-					<select id="optMaterial" name="optMaterial"></select>
+					<select id="optMaterial" name="optMaterial" aria-label="Material"></select>
 					</center>
 				</div>
 			</span>
@@ -64,6 +65,10 @@
 							title="Show/hide all oriented images and 360 markers"
 							src="images/orientedImage.png"
 							class="annotation-action-icon"
+							role="button"
+							tabindex="0"
+							aria-label="Images"
+							aria-pressed="true"
 							style="width: 1.7em; height: auto;"
 						/>
 					</center>
@@ -83,9 +88,14 @@
 								title="Search Zones"
 								src="images/icons8-magnifying-glass-50.png"
 								class="annotation-action-icon"
+								role="button"
+								tabindex="0"
+								aria-label="Zones"
+								aria-haspopup="dialog"
+								aria-expanded="false"
 								style="width: 2em; height: auto;"
 							/>
-							<div id="zoneCountBadge">0</div>
+							<div id="zoneCountBadge" aria-hidden="true">0</div>
 						</div>
 					</center>
 				</div>
@@ -98,12 +108,20 @@
 	            </div>
 	            <div>
 	                <center>
-	                    <img id="miscToolsButton" src="images/icons8-settings-50.png" class="annotation-action-icon" style="width: 2em; height: auto;"/>
+	                    <img id="miscToolsButton" src="images/icons8-settings-50.png" class="annotation-action-icon" role="button" tabindex="0" aria-label="Tools" aria-haspopup="menu" aria-expanded="false" title="Tools" style="width: 2em; height: auto;"/>
 	                </center>
 	            </div>
 	        </div>
 
 		`);
+
+		// Enter and Space press the icon buttons (and the toggle), as they would a <button>
+		document.getElementById("toolbar-wrapper").addEventListener("keydown", (e) => {
+			if ((e.key === "Enter" || e.key === " ") && e.target.matches('[role="button"]')) {
+				e.preventDefault();
+				e.target.click();
+			}
+		});
 
 
 		{ // MEASURE

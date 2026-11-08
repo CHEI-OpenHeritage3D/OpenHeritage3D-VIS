@@ -24,13 +24,14 @@ This repository is developed by the [Cultural Heritage Engineering Initiative (C
 9. [Shareable Camera Links](#shareable-camera-links)
 10. [Floating Panel System](#floating-panel-system)
 11. [Keyboard Shortcuts](#keyboard-shortcuts)
-12. [Getting Started](#getting-started)
-13. [Supported Point Cloud Formats](#supported-point-cloud-formats)
-14. [Classification Ledger → LAS Patch Script](#classification-ledger--las-patch-script)
-15. [Architecture Notes](#architecture-notes)
-16. [Repository Layout](#repository-layout)
-17. [Citing This Work](#citing-this-work)
-18. [License](#license)
+12. [Gamepad Controls](#gamepad-controls)
+13. [Getting Started](#getting-started)
+14. [Supported Point Cloud Formats](#supported-point-cloud-formats)
+15. [Classification Ledger → LAS Patch Script](#classification-ledger--las-patch-script)
+16. [Architecture Notes](#architecture-notes)
+17. [Repository Layout](#repository-layout)
+18. [Citing This Work](#citing-this-work)
+19. [License](#license)
 
 ---
 
@@ -53,6 +54,7 @@ Everything here is static, client-side JavaScript. There is no backend, no datab
 | [Transform Controls](#transform-controls--tools-menu) | Move/rotate/scale a loaded point cloud with an on-screen gizmo or typed values (registration / alignment). |
 | [Shareable Links](#shareable-camera-links) | Camera pose and zone/visibility state round-trip through the URL. |
 | [Shortcut Guide](#keyboard-shortcuts) | An illustrated keyboard/mouse overlay covering every binding in the viewer. |
+| [Gamepad Controls](#gamepad-controls) | Fly the viewer with a game controller: orbit and fly schemes that follow Potree's navigation mode, a crosshair that opens photos, 360° views and zones and aims the measuring tools and Point Inspector, the toolbar and its panels from the D-pad, a quick wheel of common tools, and a guide with a live controller diagram. |
 | [COPC Streaming](#supported-point-cloud-formats) | Load a `.copc.laz` file directly over HTTP range requests — no PotreeConverter step — with full brush and export support. |
 
 ---
@@ -209,6 +211,45 @@ The `?` button on the classification panel opens an illustrated shortcut guide �
 | `Esc` | Leave photo view |
 | `T` / `R` / `S` | Transform gizmo: move / rotate / scale |
 | `D` | Couple / decouple the transform proxy |
+
+The toolbar works from the keyboard too. `Tab` reaches its buttons and the rows of the Zones panel, and `Enter` or `Space` presses them. In the Tools menu the arrow keys move between tools. `Esc` closes the Zones panel or the Tools menu and returns to the toolbar.
+
+## Gamepad Controls
+
+Any controller the browser reports with the standard layout (Xbox, PlayStation, Switch Pro and most modern pads) can fly the viewer. Connect it and press one of its buttons; browsers only reveal a controller after that. The controller follows Potree's navigation mode instead of adding its own: Orbit and Earth get an orbit scheme, Fly and Helicopter a free-flight one, and `X` switches between the two. In both, the left stick moves and the right stick turns the view, and the mouse and keyboard keep working alongside.
+
+**Moving**
+
+| | Orbit / Earth | Fly / Helicopter |
+|---|---|---|
+| Left stick | Pan over the ground | Fly forward / sideways |
+| Right stick | Orbit the center | Look around |
+| `LT` / `RT` | Zoom out / in | Down / up |
+| `LB` / `RB` | Down / up | Slower / faster (Potree's move speed) |
+
+**Actions** (both modes)
+
+| | |
+|---|---|
+| `A` | Go to the spot under the crosshair, which becomes the orbit center, or open the photo, 360° view or zone beacon there |
+| `B` | Back: leave a photo, then return to the view before the last jump |
+| `Y` | Overview of every visible cloud |
+| `X` | Switch between Orbit and Fly |
+| D-pad `◀` `▶` / `▲` `▼` | Turn 90° / tilt 45° |
+| `Menu` | Go to the toolbar and panels (below) |
+| `View` | Tap: open the gamepad guide. Hold: the quick wheel (below) |
+
+Inside a photo or a 360° view, `◀` / `▶` step through the set, `▲` / `▼` make the photo more or less opaque in 10% steps, `Y` cycles its opacity through 100%, 50% and 0%, and `B` leaves. In a 360° view, either stick looks around and the triggers zoom.
+
+**Toolbar and panels.** `Menu` puts a highlight on the toolbar's Zones button. The D-pad moves it to the nearest button in that direction, whichever panel it is in, and scrolls long lists such as the zone tree. `A` presses the highlighted button. When that opens a panel or menu, such as Zones or Tools, the highlight moves into it, landing on the first zone in the Zones panel. On a list or slider (the material picker, an opacity slider), `A` starts a change: the D-pad changes the value and `A` again finishes. `B` closes the panel the highlight is in and returns to the button that opened it; on the toolbar, `B` or `Menu` goes back to moving the view. The sticks keep moving the camera meanwhile. Opening a photo or 360° view, starting a measurement or the Point Inspector, or using the mouse, leaves the toolbar too.
+
+**Measuring and the Point Inspector.** The toolbar's measuring tools aim with the crosshair. While a distance or height is being drawn, its newest marker sits under the crosshair, `A` adds a point there and `B` finishes; `B` before the first point cancels the measurement. A height takes two presses of `A`. With the Point Inspector open, it reads the point under the crosshair and follows it as the view moves.
+
+**Quick wheel.** Hold `View` and the toolbar's most used tools come up in a ring: Zones, Point Inspector, Measure distance, Measure height, Clear measurements, Next material, Images on/off, and Hide crosshair (for screen recordings). Point at one with either stick and let go of `View` to use it, or press `B` to close the wheel without choosing. Tools that don't apply at that moment are dimmed, such as measuring inside a 360° view. Zones opens the Zones panel with the highlight on a zone, as if reached from the toolbar.
+
+The crosshair marks the orbit center. When it rests on a photo, 360° marker or zone beacon, a prompt names what `A` will open. `View` (or Tools ▸ Gamepad Controls) opens a guide with a live controller diagram, which also shows whether the browser recognised the controller. The guide lists the mapping for both modes, with the current mode highlighted, and holds the settings: invert look, look speed, swap sticks (move with the right stick) and vibration, saved in the browser. Button names follow the controller, e.g. `✕ ○ □ △` and `L1`/`R1` on PlayStation.
+
+When the viewer is embedded in a page on another domain, Chrome allows controller input by default, but Firefox only allows it in same-origin frames, so add `allow="gamepad"` to the `<iframe>`.
 
 ---
 

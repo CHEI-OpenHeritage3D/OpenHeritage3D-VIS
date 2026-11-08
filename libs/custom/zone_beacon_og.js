@@ -520,22 +520,19 @@ window.animateBeacons = function () {
 window.animateHoveredBeacon = window.animateBeacons;
 
 // ── Click Handler ────────────────────────────────────────────
-window.addEventListener("pointerdown", () => {
-    if (currentHoveredBeacon) {
-        const zone = currentHoveredBeacon.userData.zone;
-        if (window.zoneAutoSwitchState || zone.pointclouds.length === 0) {
-            moveCameraTo(
-                currentHoveredBeacon.userData.beacon.cameraPosition,
-                currentHoveredBeacon.userData.beacon.cameraTarget
-            );
-        } else {
-            zoneOnlyToggleMoveCamera(zone);
-            moveCameraTo(
-                currentHoveredBeacon.userData.beacon.cameraPosition,
-                currentHoveredBeacon.userData.beacon.cameraTarget
-            );
-        }
+// Takes the camera to a beacon's zone. The gamepad's A button on a beacon
+// (gamepad_controls.js) does the same.
+function goToBeaconZone(beaconGroup) {
+    const zone = beaconGroup.userData.zone;
+    const beacon = beaconGroup.userData.beacon;
+    if (!window.zoneAutoSwitchState && zone.pointclouds.length !== 0) {
+        zoneOnlyToggleMoveCamera(zone);
     }
+    moveCameraTo(beacon.cameraPosition, beacon.cameraTarget);
+}
+
+window.addEventListener("pointerdown", () => {
+    if (currentHoveredBeacon) goToBeaconZone(currentHoveredBeacon);
 });
 
 

@@ -49,6 +49,15 @@
 		margin: 5px 10px;
 		width: 1px;
 	}
+
+	/* Keyboard focus on the toolbar's icon buttons */
+	#toolbar-wrapper [role="button"]:focus-visible,
+	#fullscreen-btn:focus-visible {
+		outline: 2px solid #a5b4fc;
+		outline-offset: 2px;
+		border-radius: 4px;
+		opacity: 1;
+	}
 	
 	</style>
 
@@ -119,7 +128,7 @@
 		<div id="viewer-title" style="z-index: 200000;"></div>
 
 		<div id="toolbar-wrapper" style="z-index: 200000;">
-            <div id="toolbar-toggle">▼</div>
+            <div id="toolbar-toggle" role="button" tabindex="0" aria-label="Toolbar" aria-controls="potree_toolbar" aria-expanded="true">▼</div>
             <div id="potree_toolbar"></div>
         </div>
         <div id="photo360" style="display:none; position:absolute; inset:0; z-index:10000;">
@@ -132,8 +141,8 @@
 
 
 	
-	<div id="fullscreen-btn">
-		<img src="images/icons8-full-screen-50.png" />
+	<div id="fullscreen-btn" role="button" tabindex="0" aria-label="Open in the full viewer">
+		<img src="images/icons8-full-screen-50.png" alt="" />
 	</div>
 
 	
@@ -261,6 +270,7 @@
 <script src="libs/custom/cesium_basemap.js"></script>
 <script src="libs/ml-matrix/ml-matrix.umd.min.js"></script>
 <script src="libs/custom/rigid_body_transformation.js"></script>
+<script src="libs/custom/gamepad_controls.js"></script>
 
 <script>
 		// zones.json decides how the scene loads. A schema-2 file describes the
@@ -430,6 +440,12 @@ if (window !== window.top) {
 
         window.top.location.href =
             "https://pointcloud.ucsd.edu/archive_temp/oh3d_store/oh3d-vis/base_potree_template/?vtype=" + window.vtype + "&doi=" + window.doi + "&position=" + cam.position + "&target=" + cam.target;
+    });
+    document.getElementById("fullscreen-btn").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            e.currentTarget.click();
+        }
     });
 }
 

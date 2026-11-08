@@ -65,6 +65,14 @@
 		margin: 5px 10px;
 		width: 1px;
 	}
+
+	/* Keyboard focus on the toolbar's icon buttons */
+	#toolbar-wrapper [role="button"]:focus-visible {
+		outline: 2px solid #a5b4fc;
+		outline-offset: 2px;
+		border-radius: 4px;
+		opacity: 1;
+	}
 	
 	</style>
 
@@ -122,7 +130,7 @@
 		<div id="viewer-title" style="z-index: 200000;"></div>
 
 		<div id="toolbar-wrapper" style="z-index: 200000;">
-            <div id="toolbar-toggle">▼</div>
+            <div id="toolbar-toggle" role="button" tabindex="0" aria-label="Toolbar" aria-controls="potree_toolbar" aria-expanded="true">▼</div>
             <div id="potree_toolbar"></div>
         </div>
         <div id="photo360" style="display:none; position:absolute; inset:0; z-index:10000;">
@@ -219,6 +227,7 @@
 <script src="libs/custom/scene_config.js"></script>
 <script src="libs/custom/scene_config_panel.js"></script>
 <script src="libs/custom/cesium_basemap.js"></script>
+<script src="libs/custom/gamepad_controls.js"></script>
 
 	<script>
 
@@ -258,6 +267,7 @@ toggleBtn.addEventListener("click", () => {
     const collapsed = toolbar.classList.toggle("collapsed");
 
     toggleBtn.textContent = collapsed ? "▲" : "▼";
+    toggleBtn.setAttribute("aria-expanded", String(!collapsed));
 
     // Reposition title after animation completes
     setTimeout(positionTitle, 350);
@@ -270,10 +280,10 @@ toggleBtn.addEventListener("click", () => {
 				Measure
 			</div>
 			<div>
-				<img name="action_measure_point" src="${Potree.resourcePath}/icons/point.svg" class="annotation-action-icon" style="width: 2em; height: auto;"/>
-				<img name="action_measure_distance" src="${Potree.resourcePath}/icons/distance.svg" class="annotation-action-icon" style="width: 2em; height: auto;"/>
-				<img name="action_measure_height" src="${Potree.resourcePath}/icons/height.svg" class="annotation-action-icon" style="width: 2em; height: auto;"/>
-				<img name="action_reset_tools" src="${Potree.resourcePath}/icons/reset_tools.svg" class="annotation-action-icon" style="width: 2em; height: auto;"/>
+				<img name="action_measure_point" src="${Potree.resourcePath}/icons/point.svg" class="annotation-action-icon" role="button" tabindex="0" aria-label="Measure a point" title="Measure a point" style="width: 2em; height: auto;"/>
+				<img name="action_measure_distance" src="${Potree.resourcePath}/icons/distance.svg" class="annotation-action-icon" role="button" tabindex="0" aria-label="Measure distance" title="Measure distance" style="width: 2em; height: auto;"/>
+				<img name="action_measure_height" src="${Potree.resourcePath}/icons/height.svg" class="annotation-action-icon" role="button" tabindex="0" aria-label="Measure height" title="Measure height" style="width: 2em; height: auto;"/>
+				<img name="action_reset_tools" src="${Potree.resourcePath}/icons/reset_tools.svg" class="annotation-action-icon" role="button" tabindex="0" aria-label="Remove all measurements" title="Remove all measurements" style="width: 2em; height: auto;"/>
 			</div>
 		</span>
 
@@ -285,7 +295,7 @@ toggleBtn.addEventListener("click", () => {
 			</div>
 			<div>
 				<center>
-				<select id="optMaterial" name="optMaterial"></select>
+				<select id="optMaterial" name="optMaterial" aria-label="Material"></select>
 				</center>
 			</div>
 		</span>
@@ -302,6 +312,10 @@ toggleBtn.addEventListener("click", () => {
 						title="Show/hide all oriented images and 360 markers"
 						src="images/orientedImage.png"
 						class="annotation-action-icon"
+						role="button"
+						tabindex="0"
+						aria-label="Images"
+						aria-pressed="true"
 						style="width: 1.7em; height: auto;"
 					/>
 				</center>
@@ -321,9 +335,14 @@ toggleBtn.addEventListener("click", () => {
 							title="Search Zones"
 							src="images/icons8-magnifying-glass-50.png"
 							class="annotation-action-icon"
+							role="button"
+							tabindex="0"
+							aria-label="Zones"
+							aria-haspopup="dialog"
+							aria-expanded="false"
 							style="width: 2em; height: auto;"
 						/>
-						<div id="zoneCountBadge">0</div>
+						<div id="zoneCountBadge" aria-hidden="true">0</div>
 					</div>
 				</center>
 			</div>
@@ -336,12 +355,20 @@ toggleBtn.addEventListener("click", () => {
             </div>
             <div>
                 <center>
-                    <img id="miscToolsButton" src="images/icons8-settings-50.png" class="annotation-action-icon" style="width: 2em; height: auto;"/>
+                    <img id="miscToolsButton" src="images/icons8-settings-50.png" class="annotation-action-icon" role="button" tabindex="0" aria-label="Tools" aria-haspopup="menu" aria-expanded="false" title="Tools" style="width: 2em; height: auto;"/>
                 </center>
             </div>
         </div>
 
 	`);
+
+	// Enter and Space press the icon buttons (and the toggle), as they would a <button>
+	document.getElementById("toolbar-wrapper").addEventListener("keydown", (e) => {
+		if ((e.key === "Enter" || e.key === " ") && e.target.matches('[role="button"]')) {
+			e.preventDefault();
+			e.target.click();
+		}
+	});
 
 
 	{ // MEASURE

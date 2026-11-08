@@ -155,6 +155,14 @@ style.textContent += `
 .zs-chevron.collapsed svg { transform: rotate(-90deg); }
 .zs-chevron-spacer { width: 18px; flex-shrink: 0; }
 
+/* Keyboard focus */
+.zs-chevron:focus-visible, .zs-name-btn:focus-visible, .zs-action-btn:focus-visible,
+.zs-checkbox:focus-visible, .zs-ann-item:focus-visible, .zs-edit-toggle:focus-visible,
+#autoSwitchButtonSearch:focus-visible, .zone-io-container .close-btn:focus-visible {
+    outline: 2px solid #a5b4fc;
+    outline-offset: 1px;
+}
+
 .zs-icon {
     flex-shrink: 0; width: 22px; height: 22px; display: inline-flex; align-items: center;
     justify-content: center; border-radius: 5px; margin-top: 1px;
@@ -509,20 +517,38 @@ function toggleZoneEditMode(state) {
     }
 }
 
+// The toolbar's Zones button says whether the panel is open
+function _setZonesButtonExpanded(open) {
+    const btn = document.getElementById("searchZonesButton");
+    if (btn) btn.setAttribute("aria-expanded", String(open));
+}
+
 // ── Main toggle ──────────────────────────────────────────────
-function toggleZoneSearchMenu() {
+// e: the click on the toolbar's Zones button, if that's what opened it
+function toggleZoneSearchMenu(e) {
     let existingMenu = document.getElementById("zoneSearchMenu");
-    if (existingMenu) { existingMenu.classList.remove("open"); setTimeout(() => {closeDescriptionWindow(); existingMenu.remove()}, 300); return; }
+    if (existingMenu) { existingMenu.classList.remove("open"); setTimeout(() => {closeDescriptionWindow(); existingMenu.remove()}, 300); _setZonesButtonExpanded(false); return; }
 
     repositionDescriptionWindow();
 
 
 
     const panel = document.createElement("div"); panel.id = "zoneSearchMenu";
+    panel.setAttribute("role", "dialog"); panel.setAttribute("aria-label", "Zones");
     const title = document.createElement("h3"); title.textContent = "Zones"; panel.appendChild(title);
 
-    const closeBtn = document.createElement("button"); closeBtn.textContent = "×"; closeBtn.className = "zone-form-close";
-    closeBtn.addEventListener("click", () => { panel.classList.remove("open"); setTimeout(() => {closeDescriptionWindow(); panel.remove()}, 300); }); panel.appendChild(closeBtn);
+    const closeBtn = document.createElement("button"); closeBtn.textContent = "×"; closeBtn.className = "zone-form-close"; closeBtn.setAttribute("aria-label", "Close");
+    closeBtn.addEventListener("click", () => { panel.classList.remove("open"); setTimeout(() => {closeDescriptionWindow(); panel.remove()}, 300); _setZonesButtonExpanded(false); }); panel.appendChild(closeBtn);
+
+    // Escape closes the panel and goes back to the toolbar's Zones button
+    panel.addEventListener("keydown", (ev) => {
+        if (ev.key !== "Escape") return;
+        ev.preventDefault();
+        ev.stopPropagation();   // not on to the photo's own Escape
+        closeBtn.click();
+        const btn = document.getElementById("searchZonesButton");
+        if (btn) btn.focus({ preventScroll: true });
+    });
 
     const autoSwitchButton = document.createElement("button"); autoSwitchButton.id = "autoSwitchButtonSearch"; autoSwitchButton.className = "close-btn";
     if(window.zoneAutoSwitchState){
@@ -587,7 +613,7 @@ function toggleZoneSearchMenu() {
     panel.appendChild(ioContainer);
 
 
-    const searchInput = document.createElement("input"); searchInput.type = "text"; searchInput.placeholder = "Search zones & annotations…"; searchInput.className = "zs-search-input"; panel.appendChild(searchInput);
+    const searchInput = document.createElement("input"); searchInput.type = "text"; searchInput.placeholder = "Search zones & annotations…"; searchInput.className = "zs-search-input"; searchInput.setAttribute("aria-label", "Search zones and annotations"); panel.appendChild(searchInput);
     const scrollContainer = document.createElement("div"); scrollContainer.className = "zs-scroll"; panel.appendChild(scrollContainer);
     const noResults = document.createElement("p"); noResults.className = "zs-no-results"; noResults.textContent = "No matching zones or annotations."; scrollContainer.appendChild(noResults);
 
@@ -622,10 +648,10 @@ function toggleZoneSearchMenu() {
                 if (query && (zoneMatches || anyAnnMatch)) {
                     annContainer.classList.remove("collapsed");
                     const chev = node.querySelector(".zs-chevron");
-                    if (chev) chev.classList.remove("collapsed");
+                    if (chev) { chev.classList.remove("collapsed"); chev.setAttribute("aria-expanded", "true"); }
                     // reveal matching oriented-image rows, then re-fit the container
                     node.querySelectorAll(".zs-oi-items.collapsed").forEach(el => el.classList.remove("collapsed"));
-                    node.querySelectorAll(".zs-oi-header .zs-chevron.collapsed").forEach(el => el.classList.remove("collapsed"));
+                    node.querySelectorAll(".zs-oi-header .zs-chevron.collapsed").forEach(el => { el.classList.remove("collapsed"); el.setAttribute("aria-expanded", "true"); });
                     requestAnimationFrame(() => { annContainer.style.maxHeight = annContainer.scrollHeight + "px"; });
                 }
             }
@@ -651,6 +677,12 @@ function toggleZoneSearchMenu() {
     document.body.appendChild(panel);
     requestAnimationFrame(() => panel.classList.add("open"));
     _refreshIsolatedHighlight();
+    _setZonesButtonExpanded(true);
+
+    // Opened from the keyboard or a controller (a click with no mouse behind it): into the search box.
+    // Next frame, once panel_window_manager.js has moved the panel into its frame (moving it drops
+    // focus), and without scrolling to it: the panel is still off screen, sliding in.
+    if (e && e.detail === 0) requestAnimationFrame(() => searchInput.focus({ preventScroll: true }));
 }
 
 // Rebuild the search panel in place if it's currently open. Oriented-image
@@ -678,12 +710,14 @@ function _renderSearchNode(zone, container, depth) {
 
     if (isExpandable) {
         const chevron = document.createElement("button"); chevron.className = `zs-chevron${isCollapsed ? " collapsed" : ""}`;
+        chevron.setAttribute("aria-label", `Contents of ${zone.name}`); chevron.setAttribute("aria-expanded", String(!isCollapsed));
         chevron.appendChild(_sChevron());
         chevron.addEventListener("click", (e) => {
             e.stopPropagation();
             const currentlyCollapsed = chevron.classList.contains("collapsed");
             if (currentlyCollapsed) { _collapsedSearch.delete(zone.name); _expandedSearch.add(zone.name); chevron.classList.remove("collapsed"); }
             else { _collapsedSearch.add(zone.name); _expandedSearch.delete(zone.name); chevron.classList.add("collapsed"); }
+            chevron.setAttribute("aria-expanded", String(currentlyCollapsed));
             const annC = node.querySelector(":scope > .zs-annotations"); if (annC) annC.classList.toggle("collapsed", _collapsedSearch.has(zone.name));
             const childC = node.querySelector(":scope > .zs-children"); if (childC) childC.style.display = _collapsedSearch.has(zone.name) ? "none" : "";
         });
@@ -762,6 +796,7 @@ function _renderSearchNode(zone, container, depth) {
 
     // Visibility checkbox
     const chk = document.createElement("input"); chk.type = "checkbox"; chk.className = "zs-checkbox";
+    chk.setAttribute("aria-label", `Show ${zone.name}`);
     chk.checked = getZoneVisibility(zone); chk.zone = zone; window.zoneCheckboxes.push(chk);
     chk.addEventListener("change", () => {
         setAutoSwitchState(false); viewer.setClipTask(2);
@@ -800,12 +835,25 @@ function _renderSearchNode(zone, container, depth) {
     }
 }
 
+// Rows that act on a click (annotations, 360s, photos): reachable with Tab, pressed with Enter or Space
+function _pressable(el) {
+    el.tabIndex = 0;
+    el.setAttribute("role", "button");
+    el.addEventListener("keydown", (e) => {
+        if (e.target !== el || (e.key !== "Enter" && e.key !== " ")) return;
+        e.preventDefault();
+        e.stopPropagation();   // not on to the photo's own Space (peek)
+        el.click();
+    });
+}
+
 function _createAnnItem(ref, type) {
     const item = document.createElement("div"); item.className = "zs-ann-item"; item._ref = ref;
+    _pressable(item);
     if (type === "annotation") {
         item.title = ref.description || ref.userData?.description || "";
         const iconSrc = annotationIcons[ref.userData?.type || "none"];
-        const icon = document.createElement("img"); icon.src = iconSrc; icon.className = "zs-ann-icon"; item.appendChild(icon);
+        const icon = document.createElement("img"); icon.src = iconSrc; icon.alt = ""; icon.className = "zs-ann-icon"; item.appendChild(icon);
         const t = document.createElement("span"); t.className = "zs-ann-title"; t.textContent = ref.title || "Untitled"; item.appendChild(t);
 
         // Description info button
@@ -825,7 +873,7 @@ function _createAnnItem(ref, type) {
         item.addEventListener("click", () => { if (ref.cameraPosition && ref.cameraTarget) { if (window.in360View) window.close360(); moveCameraToClose360(ref.cameraPosition, ref.cameraTarget); } });
     } else {
         item.title = ref.name || "360 Image";
-        const icon = document.createElement("img"); icon.src = annotationIcons["marker360"]; icon.className = "zs-ann-icon"; item.appendChild(icon);
+        const icon = document.createElement("img"); icon.src = annotationIcons["marker360"]; icon.alt = ""; icon.className = "zs-ann-icon"; item.appendChild(icon);
         const t = document.createElement("span"); t.className = "zs-ann-title"; t.textContent = ref.name || "360 Marker"; item.appendChild(t);
         if (window.viewing360Marker === ref) item.classList.add("viewing");
         item.addEventListener("click", () => { if (window.open360 && ref._sphereMarker) window.open360(ref._sphereMarker); });
@@ -850,6 +898,8 @@ function _createOrientedImageGroup(handler, index) {
 
     const chevron = document.createElement("button");
     chevron.className = "zs-chevron collapsed";   // start collapsed
+    chevron.setAttribute("aria-label", `Images of ${handler.name || `Oriented Images ${index + 1}`}`);
+    chevron.setAttribute("aria-expanded", "false");
     chevron.appendChild(_sChevron());
     header.appendChild(chevron);
 
@@ -858,6 +908,7 @@ function _createOrientedImageGroup(handler, index) {
     chk.className = "zs-checkbox zs-oi-toggle";
     chk.checked = orientedImageSetEnabled(handler);
     chk.title = "Show/hide this set of oriented images";
+    chk.setAttribute("aria-label", `Show ${handler.name || `Oriented Images ${index + 1}`}`);
     chk.oiHandler = handler;
     window.zoneOICheckboxes.push(chk);
     chk.addEventListener("click", (e) => e.stopPropagation());   // don't collapse
@@ -866,6 +917,7 @@ function _createOrientedImageGroup(handler, index) {
 
     const hIcon = document.createElement("img");
     hIcon.src = annotationIcons["orientedImage"];
+    hIcon.alt = "";
     hIcon.className = "zs-ann-icon";
     header.appendChild(hIcon);
 
@@ -884,10 +936,12 @@ function _createOrientedImageGroup(handler, index) {
         const item = document.createElement("div");
         item.className = "zs-ann-item zs-oi-item";
         item._ref = image;
+        _pressable(item);
         item.title = image.id || "Oriented image";
 
         const icon = document.createElement("img");
         icon.src = annotationIcons["orientedImage"];
+        icon.alt = "";
         icon.className = "zs-ann-icon";
         item.appendChild(icon);
 
@@ -919,6 +973,7 @@ function _createOrientedImageGroup(handler, index) {
     // that's on screen changes, otherwise the rows would be clipped.
     header.addEventListener("click", () => {
         const collapsed = chevron.classList.toggle("collapsed");
+        chevron.setAttribute("aria-expanded", String(!collapsed));
         itemsWrap.classList.toggle("collapsed", collapsed);
         const annC = group.closest(".zs-annotations");
         if (annC && !annC.classList.contains("collapsed")) {
@@ -1207,7 +1262,7 @@ function _autoExpandToZone(zone) {
             const annC = node.querySelector(":scope > .zs-annotations");
             const childC = node.querySelector(":scope > .zs-children");
 
-            if (chevron) chevron.classList.remove("collapsed");
+            if (chevron) { chevron.classList.remove("collapsed"); chevron.setAttribute("aria-expanded", "true"); }
             if (annC) annC.classList.remove("collapsed");
             if (childC) childC.style.display = "";
 
@@ -1227,7 +1282,7 @@ function _autoExpandToZone(zone) {
                 const annC = node.querySelector(":scope > .zs-annotations");
                 const childC = node.querySelector(":scope > .zs-children");
 
-                if (chevron) chevron.classList.remove("collapsed");
+                if (chevron) { chevron.classList.remove("collapsed"); chevron.setAttribute("aria-expanded", "true"); }
                 if (annC) annC.classList.remove("collapsed");
                 if (childC) childC.style.display = "";
 
@@ -1249,7 +1304,7 @@ function _collapseAutoExpanded() {
             const annC = node.querySelector(":scope > .zs-annotations");
             const childC = node.querySelector(":scope > .zs-children");
 
-            if (chevron) chevron.classList.add("collapsed");
+            if (chevron) { chevron.classList.add("collapsed"); chevron.setAttribute("aria-expanded", "false"); }
             if (annC) annC.classList.add("collapsed");
             if (childC) childC.style.display = "none";
         }

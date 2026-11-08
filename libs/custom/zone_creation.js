@@ -3112,7 +3112,9 @@ window.restoreImageMarkerVisibility = restoreImageMarkerVisibility;
 // Mirror the global flag onto the button's visual state.
 function _syncGlobalOIBubble() {
     const btn = document.getElementById("globalOIToggle");
-    if (btn) btn.classList.toggle("oi-off", window.imageMarkersGloballyHidden === true);
+    if (!btn) return;
+    btn.classList.toggle("oi-off", window.imageMarkersGloballyHidden === true);
+    btn.setAttribute("aria-pressed", String(window.imageMarkersGloballyHidden !== true));
 }
 
 // Keep the toolbar button in sync with the zone data: shown only when at

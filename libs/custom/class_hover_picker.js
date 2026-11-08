@@ -16,7 +16,9 @@
  *   pixel under it.
  *
  * Usage:
- *   Toolbar ▸ Point Inspector, Tools ▸ Point Inspector, or press I.
+ *   Toolbar ▸ Point Inspector, Tools ▸ Point Inspector, or press I. While a
+ *   gamepad is in use it reads the point under its crosshair instead
+ *   (gamepad_controls.js calls inspectPointAt()).
  *   While the window is open:
  *     left click       lock the point under the cursor, so the mouse can
  *                      travel to the window (or the camera can orbit)
@@ -424,6 +426,17 @@
 
     function onCanvasLeave() {
         if (!state.locked) setStale(true);
+    }
+
+    // Inspects a screen spot without the mouse: the gamepad's crosshair
+    // (gamepad_controls.js). Returns whether the inspector is open.
+    function inspectPointAt(clientX, clientY) {
+        if (!state.panel) return false;
+        if (!state.locked) {
+            state.pendingEvent = { clientX, clientY };
+            schedulePick();
+        }
+        return true;
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -1003,4 +1016,5 @@
     window.togglePointInspector = togglePointInspector;
     window.openPointInspector = openPointInspector;
     window.closePointInspector = closePointInspector;
+    window.inspectPointAt = inspectPointAt;
 })();
