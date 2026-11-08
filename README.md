@@ -25,13 +25,14 @@ This repository is developed by the [Cultural Heritage Engineering Initiative (C
 10. [Floating Panel System](#floating-panel-system)
 11. [Keyboard Shortcuts](#keyboard-shortcuts)
 12. [Gamepad Controls](#gamepad-controls)
-13. [Getting Started](#getting-started)
-14. [Supported Point Cloud Formats](#supported-point-cloud-formats)
-15. [Classification Ledger → LAS Patch Script](#classification-ledger--las-patch-script)
-16. [Architecture Notes](#architecture-notes)
-17. [Repository Layout](#repository-layout)
-18. [Citing This Work](#citing-this-work)
-19. [License](#license)
+13. [Touch Controls](#touch-controls)
+14. [Getting Started](#getting-started)
+15. [Supported Point Cloud Formats](#supported-point-cloud-formats)
+16. [Classification Ledger → LAS Patch Script](#classification-ledger--las-patch-script)
+17. [Architecture Notes](#architecture-notes)
+18. [Repository Layout](#repository-layout)
+19. [Citing This Work](#citing-this-work)
+20. [License](#license)
 
 ---
 
@@ -55,6 +56,7 @@ Everything here is static, client-side JavaScript. There is no backend, no datab
 | [Shareable Links](#shareable-camera-links) | Camera pose and zone/visibility state round-trip through the URL. |
 | [Shortcut Guide](#keyboard-shortcuts) | An illustrated keyboard/mouse overlay covering every binding in the viewer. |
 | [Gamepad Controls](#gamepad-controls) | Fly the viewer with a game controller: orbit and fly schemes that follow Potree's navigation mode, a crosshair that opens photos, 360° views and zones and aims the measuring tools and Point Inspector, the toolbar and its panels from the D-pad, a quick wheel of common tools, and a guide with a live controller diagram. |
+| [Touch Controls](#touch-controls) | Phones and tablets: one finger turns the view, two pinch, move and twist it, taps open photos, 360° views and zones and place measuring points, and pressing and holding inspects a point. On phones the toolbar becomes one row of icons and panels open as sheets. |
 | [COPC Streaming](#supported-point-cloud-formats) | Load a `.copc.laz` file directly over HTTP range requests — no PotreeConverter step — with full brush and export support. |
 
 ---
@@ -187,7 +189,7 @@ Camera position/target, active zone, and point-cloud visibility state round-trip
 
 ## Floating Panel System
 
-All of the side panels above (zones, download, layer map, transform, oriented images, tools) share a lightweight window-manager layer: every panel is draggable by its titlebar, resizable from eight edge/corner handles, and auto-placed so opening a new panel stacks it down the right edge and wraps into a new column rather than burying whatever's already open.
+All of the side panels above (zones, download, layer map, transform, oriented images, tools) share a lightweight window-manager layer: every panel is draggable by its titlebar, resizable from eight edge/corner handles, and auto-placed so opening a new panel stacks it down the right edge and wraps into a new column rather than burying whatever's already open. On phones the same panels open as sheets from the bottom of the screen instead (see [Touch Controls](#touch-controls)).
 
 ## Keyboard Shortcuts
 
@@ -250,6 +252,37 @@ Inside a photo or a 360° view, `◀` / `▶` step through the set, `▲` / `▼
 The crosshair marks the orbit center. When it rests on a photo, 360° marker or zone beacon, a prompt names what `A` will open. `View` (or Tools ▸ Gamepad Controls) opens a guide with a live controller diagram, which also shows whether the browser recognised the controller. The guide lists the mapping for both modes, with the current mode highlighted, and holds the settings: invert look, look speed, swap sticks (move with the right stick) and vibration, saved in the browser. Button names follow the controller, e.g. `✕ ○ □ △` and `L1`/`R1` on PlayStation.
 
 When the viewer is embedded in a page on another domain, Chrome allows controller input by default, but Firefox only allows it in same-origin frames, so add `allow="gamepad"` to the `<iframe>`.
+
+## Touch Controls
+
+On phones and tablets the 3D view takes touch gestures. They are only active where the main pointer is a finger. A desktop computer keeps its mouse behaviour, even if it also has a touchscreen.
+
+| | |
+|---|---|
+| Drag one finger | Turn around the orbit center (in Fly mode: look around) |
+| Pinch / spread | Zoom toward the fingers |
+| Drag two fingers | Move the view; twist them to turn it |
+| Double tap | Zoom to that spot, as a double-click does |
+| Tap a marker | Open the photo, 360° view or zone beacon |
+| Press and hold | Open the Point Inspector on that point |
+| Swipe in a photo | Next / previous photo |
+
+The point between your fingers stays under them while you pinch, move and twist. A twist only turns the view once it is clearly meant (about 11°), so pinching doesn't wobble it. A quick flick keeps the view turning for a moment.
+
+**Measuring and the Point Inspector.** Choose Measure distance or Measure height on the toolbar, then tap the point cloud where each point goes. A bar at the bottom counts the points and offers Done and Cancel, since a phone has no right-click; a height finishes by itself at its second point. To move a point you have placed, drag it with a finger. While the Point Inspector is open, a tap reads the point under it.
+
+**Small screens.** On screens under 640 px wide (or under 500 px tall, in landscape), the layout changes:
+- The toolbar becomes a single row of icons. Press and hold an icon to see its name.
+- Panels open as sheets from the bottom of the screen, or from the right in landscape.
+- The photo bar moves its opacity slider to a second row.
+
+Tablets keep the desktop toolbar and floating panels, with the gestures above.
+
+A card lists the gestures on the first visit, except in an embedded viewer; Tools ▸ Touch Gestures shows it again. Tools that pick with the mouse, such as Align by Point Pairs, treat a tap as a click.
+
+Known limits:
+- The Classification Brush still needs a mouse and keyboard, because it paints with `Ctrl`.
+- In a viewer embedded in another page, the 3D view takes every touch. The page around it can only be scrolled from outside the viewer, as before.
 
 ---
 

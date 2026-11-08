@@ -18,7 +18,9 @@
  * Usage:
  *   Toolbar ▸ Point Inspector, Tools ▸ Point Inspector, or press I. While a
  *   gamepad is in use it reads the point under its crosshair instead
- *   (gamepad_controls.js calls inspectPointAt()).
+ *   (gamepad_controls.js calls inspectPointAt()). On a phone or tablet a tap
+ *   reads the point there, and pressing and holding opens it on that point
+ *   (touch_controls.js).
  *   While the window is open:
  *     left click       lock the point under the cursor, so the mouse can
  *                      travel to the window (or the camera can orbit)
@@ -49,6 +51,10 @@
     // Pixel window the pick searches for the nearest point. Small enough to
     // feel precise, large enough not to flicker across gaps in sparse clouds.
     const PICK_WINDOW = 25;
+
+    // On phones and tablets (touch_controls.js) a tap reads a point: there's
+    // no hover to follow, so nothing to lock either
+    const touch = () => document.documentElement.classList.contains("touch-ui");
 
     // Attributes rendered by a dedicated row (or deliberately hidden — see
     // the GPS-time note above). Everything else gets a generic row.
@@ -291,6 +297,7 @@
 }
 .pi-btn:hover:not(:disabled) { background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.22); color: #fff; }
 .pi-btn:disabled { opacity: 0.4; cursor: default; }
+.pi-btn[hidden] { display: none; }
 .pi-btn kbd {
     padding: 0 4px;
     border-radius: 3px;
@@ -513,7 +520,8 @@
         const content = el("div", "pi-content");
 
         content.appendChild(el("div", "pi-empty",
-            `${ICON_TARGET}<span>Hover over the point cloud to inspect a point. <b>Click</b> to lock it.</span>`));
+            touch() ? `${ICON_TARGET}<span><b>Tap</b> the point cloud to inspect a point.</span>`
+                    : `${ICON_TARGET}<span>Hover over the point cloud to inspect a point. <b>Click</b> to lock it.</span>`));
 
         const readout = el("div", "pi-readout");
 
@@ -529,7 +537,8 @@
         pos.title = "Copy X, Y, Z";
         const posHead = el("div", "pi-pos-head");
         posHead.appendChild(el("span", "pi-label", "Position"));
-        const posHint = el("span", "pi-pos-hint", "Click to copy");
+        const copyHint = touch() ? "Tap to copy" : "Click to copy";
+        const posHint = el("span", "pi-pos-hint", copyHint);
         posHead.appendChild(posHint);
         pos.appendChild(posHead);
         const grid = el("div", "pi-pos-grid");
@@ -550,7 +559,7 @@
                 posHint.textContent = "Copied";
                 setTimeout(() => {
                     pos.classList.remove("pi-copied");
-                    posHint.textContent = "Click to copy";
+                    posHint.textContent = copyHint;
                 }, 1200);
             });
         });
@@ -590,6 +599,7 @@
         const lockBtn = el("button", "pi-btn");
         lockBtn.type = "button";
         lockBtn.addEventListener("click", toggleLock);
+        lockBtn.hidden = touch();
         footer.appendChild(lockBtn);
 
         panel.appendChild(footer);
@@ -779,7 +789,8 @@
         panel.classList.toggle("pi-stale", !state.locked && hasPoint && state.stale);
 
         let text;
-        if (state.locked) text = "Locked · click to release";
+        if (touch()) text = !hasPoint ? "Tap the cloud" : state.stale ? "No point there" : "Tap another point to read it";
+        else if (state.locked) text = "Locked · click to release";
         else if (!hasPoint) text = "Hover the cloud · click to lock";
         else if (state.stale) text = "No point under cursor";
         else text = "Live · click to lock";

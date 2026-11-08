@@ -331,6 +331,10 @@ document.addEventListener("DOMContentLoaded", () => {
 			...(window.GamepadControls?.toggleHelp ? [{
 				name: "Gamepad Controls", id: "gamepadControlsBtn", onClick: () => window.GamepadControls.toggleHelp()
 			}] : []),
+			// touch_controls.js only runs on phones and tablets
+			...(window.TouchControls?.toggleHelp ? [{
+				name: "Touch Gestures", id: "touchGesturesBtn", onClick: () => window.TouchControls.toggleHelp()
+			}] : []),
 			// class_hover_picker.js isn't loaded by every page that uses this menu
 			// ...(typeof togglePointInspector === "function" ? [{
 			// 	name: "Point Inspector", id: "pointInspectorBtn", onClick: () => togglePointInspector()
