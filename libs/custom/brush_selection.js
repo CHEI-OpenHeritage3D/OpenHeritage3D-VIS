@@ -2176,6 +2176,7 @@ function fillLoadedSubtree(geoNode, classification) {
         if (classAttr) {
             classAttr.array.fill(classification);
             classAttr.needsUpdate = true;
+            window.__bench?.onEditFlag?.();
         }
     }
     for (let i = 0; i < 8; i++) {
@@ -2448,7 +2449,9 @@ function isNodeFullyVisibleUnderClip(worldBox, clipInverses, showInside) {
 // count sees. Hierarchy is immutable, so each chunk's subtree total is memoized.
 const _subtreeCountMemo = new WeakMap();   // pcoGeometry → Map(chunk offset → Promise<{nodes, points}>)
 
-function _countOnce(geom, offset, count) {
+// `keep()`, asked once the count is done, says whether to keep it (default: always);
+// the count is shared by every caller meanwhile.
+function _countOnce(geom, offset, count, keep = null) {
     let memo = _subtreeCountMemo.get(geom);
     if (!memo) { memo = new Map(); _subtreeCountMemo.set(geom, memo); }
     const key = String(offset);
@@ -2456,7 +2459,8 @@ function _countOnce(geom, offset, count) {
     if (!p) {
         p = count();
         memo.set(key, p);
-        p.catch(() => memo.delete(key));   // retry a failed fetch on the next stroke
+        p.then(() => { if (keep && !keep()) memo.delete(key); },
+               () => memo.delete(key));   // retry a failed fetch on the next stroke
     }
     return p;
 }
@@ -2523,11 +2527,490 @@ function _hierarchyFile(geom) {
     return file;
 }
 
+// ══════════════════════════════════════════════════════════════
+//  Hierarchy cache and precache (Potree 2.0 hierarchy.bin)
+//
+//  Potree reads a cloud's hierarchy one chunk per proxy node it loads, each with its
+//  own range request, and chunks can be tiny: 8j7j-6m43 has 1.36 M chunks in 122 MB,
+//  1.19 M of them a single 22-byte record. A stroke across many unexpanded proxies,
+//  or a profiler count over the subtrees a stroke encloses, then makes hundreds to
+//  hundreds of thousands of few-byte requests.
+//
+//  PotreeConverter 2 writes each chunk's subtree (the chunk and every chunk below its
+//  proxies) as one contiguous span starting with the chunk: depth-first, the subtrees
+//  of a chunk's proxies in record order. A proxy's span therefore ends where the next
+//  proxy of its parent chunk starts, else where the parent's span ends, and the root's
+//  span is the whole file (checked on every chunk of six clouds, 1.36 M chunks in the
+//  largest). One range request can fetch everything a stroke reads below a proxy.
+//  Not in every file: the converter writes each of its batches whole but the chunks
+//  inside a batch level by level, which only differs once a batch holds three chunk
+//  levels (LA County's depth-4 batches: their depth-8 chunks, then all their depth-12
+//  chunks). The layout check below catches that, and such a file is read chunk by
+//  chunk, a chunk's proxies together since they sit side by side.
+//
+//  Every hierarchy read goes through one cache per file: Potree's own (NodeLoader.
+//  loadHierarchy is wrapped below), the stroke profiler's and the full octree grid's.
+//  A read is served from fetched bytes or from a fetch in flight that covers it, else
+//  fetched alone, as before. A stroke anticipates the proxies it will load (its
+//  partly covered ones, found as processNode would find them, on the hierarchy in
+//  memory and again in each chunk parsed during the stroke) and fetches their whole
+//  subtree spans up front when they're small, merged into a few requests. A proxy
+//  with a big span is fetched alone and its children are planned once it's parsed.
+//  Once strokes have asked for a quarter of a small file, the next stroke fetches the
+//  whole file in the background. The cache only serves bytes fetched from that file at
+//  those offsets, so a wrong guess costs bytes or a request, never a different read.
+//
+//  window.BRUSH_HIERARCHY.enabled = false goes back to Potree's per-chunk reads and
+//  the readers' old path. .stats counts reads, cache hits and requests.
+// ══════════════════════════════════════════════════════════════
+
+const HIERARCHY_PRECACHE = window.BRUSH_HIERARCHY = {
+    enabled: true,
+    spanMax: 256 * 1024,               // a stroke fetches a proxy's whole subtree when its span is at most this
+    mergeGap: 32 * 1024,               // wanted ranges at most this far apart are fetched as one...
+    requestMax: 256 * 1024,            // ...up to this size: a chunk read waits for its whole response, and
+                                       // 2 MB requests saved only 2 of 109 on 18 simulated 8j7j strokes
+    readerSpanMax: 16 * 1024 * 1024,   // span and request limit for the profiler and the grid, which read
+                                       // every chunk below what they count
+    readerBudget: 32 * 1024 * 1024,    // span bytes they hold at once, fetched and not yet read through
+    readerConcurrency: 8,              // subtrees they read at once, per level of chunks
+    wholeMax: 16 * 1024 * 1024,        // strokes fetch a file up to this size whole...
+    wholeFraction: 0.25,               // ...once earlier strokes have asked for this share of it
+    capBytes: 64 * 1024 * 1024,        // bytes kept across files, least recently used dropped first
+    stats: { reads: 0, hits: 0, waits: 0, requests: 0, bytes: 0, anticipated: 0 },
+};
+
+let _hcTick = 0;                       // LRU clock
+let _hcTotal = 0;                      // bytes cached across files
+const _hcSegments = new Set();         // every cached segment, for eviction
+const _hcCaches = new Map();           // hierarchy.bin URL → HierarchyCache
+
+class HierarchyCache {
+    constructor(url) {
+        this.url = url;
+        this.size = null;              // file size, once a response has told it
+        this.segs = [];                // fetched bytes { start, end, buf, used, cache }, sorted, disjoint
+        this.inflight = [];            // fetches reads wait for: { start, end, promise }
+        this.planned = 0;              // bytes strokes have asked for, for the whole-file rule
+        this.whole = null;             // strokes' whole-file fetch (background)
+        this.readersWhole = null;      // the profiler's and grid's whole-file fetch
+        this.layoutOk = true;          // subtrees are contiguous spans, as far as parsed chunks show
+    }
+
+    // A parsed chunk's proxies start right after it and before its span ends, if the file
+    // is laid out as PotreeConverter writes it. A file laid out otherwise is read chunk by
+    // chunk from then on, since span guesses would fetch unrelated bytes.
+    checkLayout(chunkEnd, spanEnd, proxyOffsets /* sorted */) {
+        if (!this.layoutOk || spanEnd === null || proxyOffsets.length === 0) return;
+        if (proxyOffsets[0] !== chunkEnd || proxyOffsets[proxyOffsets.length - 1] >= spanEnd) {
+            this.layoutOk = false;
+            console.warn(`[brush] ${this.url} isn't laid out depth-first; reading its hierarchy chunk by chunk`);
+        }
+    }
+
+    // Index of the first segment that ends after pos.
+    _after(pos) {
+        const s = this.segs;
+        let lo = 0, hi = s.length;
+        while (lo < hi) { const m = (lo + hi) >>> 1; if (s[m].end <= pos) lo = m + 1; else hi = m; }
+        return lo;
+    }
+
+    has(start, end) {
+        const s = this.segs;
+        for (let i = this._after(start), pos = start; pos < end; pos = s[i++].end) {
+            if (i >= s.length || s[i].start > pos) return false;
+        }
+        return true;
+    }
+
+    // Bytes [start, end) as a new ArrayBuffer, or null if not all cached.
+    slice(start, end) {
+        const s = this.segs;
+        let i = this._after(start);
+        if (i >= s.length || s[i].start > start) return null;
+        const tick = ++_hcTick;
+        if (s[i].end >= end) {
+            s[i].used = tick;
+            return s[i].buf.slice(start - s[i].start, end - s[i].start);
+        }
+        const out = new Uint8Array(end - start);        // spread over adjacent segments
+        for (let pos = start; pos < end; i++) {
+            if (i >= s.length || s[i].start > pos) return null;
+            const n = Math.min(end, s[i].end) - pos;
+            out.set(new Uint8Array(s[i].buf, pos - s[i].start, n), pos - start);
+            s[i].used = tick;
+            pos += n;
+        }
+        return out.buffer;
+    }
+
+    // True when [start, end) is cached, or one fetch in flight covers it.
+    covered(start, end) {
+        return this.has(start, end) || this.inflight.some(f => f.start <= start && f.end >= end);
+    }
+
+    // Keep bytes fetched at `start`. Segments stay disjoint: parts already held are cut off.
+    insert(start, buf) {
+        let end = start + buf.byteLength;
+        const s = this.segs;
+        let i = this._after(start);
+        if (i < s.length && s[i].start <= start) {      // an older segment holds the front
+            if (s[i].end >= end) { s[i].used = ++_hcTick; return; }
+            buf = buf.slice(s[i].end - start);
+            start = s[i++].end;
+        }
+        let j = i;
+        while (j < s.length && s[j].end <= end) j++;    // older segments inside the new one
+        if (j < s.length && s[j].start < end) {         // an older segment holds the back
+            buf = buf.slice(0, s[j].start - start);
+            end = s[j].start;
+        }
+        if (end <= start) return;
+        for (let k = i; k < j; k++) { _hcSegments.delete(s[k]); _hcTotal -= s[k].buf.byteLength; }
+        const seg = { start, end, buf, used: ++_hcTick, cache: this };
+        s.splice(i, j - i, seg);
+        _hcSegments.add(seg);
+        _hcTotal += buf.byteLength;
+        _hcEvict(seg);
+    }
+
+    // One range request for [start, end). Keeps what comes back and resolves with it as
+    // { start, buf }. Reads wait for it unless it runs in the background.
+    fetch(start, end, background = false) {
+        const stats = HIERARCHY_PRECACHE.stats;
+        const promise = _hierarchyFetch(async () => {
+            stats.requests++;
+            const res = await _withRetries(() => fetch(this.url, { headers: { Range: `bytes=${start}-${end - 1}` } }));
+            if (!res.ok) throw new Error(`hierarchy.bin: HTTP ${res.status}`);
+            const buf = await res.arrayBuffer();
+            stats.bytes += buf.byteLength;
+            let at = 0;
+            if (res.status === 206) {
+                const m = /bytes\s+(\d+)-(\d+)\/(\d+|\*)/i.exec(res.headers.get("Content-Range") || "");
+                if (m) {
+                    at = Number(m[1]);
+                    if (m[3] !== "*") this.size = Number(m[3]);
+                } else if (buf.byteLength === end - start) {
+                    at = start;                         // Content-Range hidden (cross-origin): what was asked
+                } else {
+                    throw new Error("hierarchy.bin: range response without Content-Range");
+                }
+            } else {
+                this.size = buf.byteLength;             // 200: the server ignored Range and sent it all
+            }
+            this.insert(at, buf);
+            return { start: at, buf };
+        });
+        if (!background) {
+            const entry = { start, end, promise };
+            this.inflight.push(entry);
+            const done = () => { const k = this.inflight.indexOf(entry); if (k >= 0) this.inflight.splice(k, 1); };
+            promise.then(done, done);
+        }
+        return promise;
+    }
+
+    // Bytes [start, end) as an ArrayBuffer: cached, from a fetch in flight, or fetched alone.
+    async read(start, end) {
+        const stats = HIERARCHY_PRECACHE.stats;
+        stats.reads++;
+        let buf = this.slice(start, end);
+        if (buf) { stats.hits++; return buf; }
+        const pending = this.inflight.find(f => f.start <= start && f.end >= end);
+        if (pending) {
+            await pending.promise.catch(() => {});
+            buf = this.slice(start, end);
+            if (buf) { stats.waits++; return buf; }
+        }
+        const got = await this.fetch(start, end);
+        if (got.start > start || got.start + got.buf.byteLength < end) throw new Error("hierarchy.bin: short range response");
+        return got.buf.slice(start - got.start, end - got.start);
+    }
+
+    // Fetch the parts of `ranges` ([start, end) pairs) neither cached nor in flight, joining
+    // ranges at most `gap` apart into requests of up to `max` bytes. Returns the bytes asked for.
+    prefetch(ranges, gap, max) {
+        const want = ranges.filter(([s, e]) => e > s && !this.covered(s, e)).sort((a, b) => a[0] - b[0]);
+        let asked = 0, run = null;
+        const send = () => {
+            if (!run) return;
+            this.fetch(run[0], run[1]).catch(() => {});  // reads it would have served fetch alone
+            asked += run[1] - run[0];
+        };
+        for (const [s, e] of want) {
+            if (run && s - run[1] <= gap && Math.max(e, run[1]) - run[0] <= max) run[1] = Math.max(run[1], e);
+            else { send(); run = [s, e]; }
+        }
+        send();
+        return asked;
+    }
+
+    // The profiler and the grid read every chunk below what they count, so a file up to
+    // HIERARCHY_WHOLE_FILE_MAX is downloaded once, whole, as it was before this cache.
+    wholeForReaders() {
+        if (!this.readersWhole) {
+            this.readersWhole = (async () => {
+                if (this.size === null) {
+                    // no-store: a HEAD answered from a partial cache entry can misreport the size
+                    const head = await _withRetries(() => fetch(this.url, { method: "HEAD", cache: "no-store" }));
+                    const n = Number(head.headers.get("Content-Length"));
+                    if (n > 0) this.size = n;
+                }
+                if (this.size !== null && this.size <= HIERARCHY_WHOLE_FILE_MAX && !this.has(0, this.size)) {
+                    await this.fetch(0, this.size);
+                }
+            })().catch(() => { this.readersWhole = null; });   // read by range; try again next time
+        }
+        return this.readersWhole;
+    }
+}
+
+// Drop least recently used segments, other than `keep`, until the cache fits its cap.
+function _hcEvict(keep) {
+    while (_hcTotal > HIERARCHY_PRECACHE.capBytes) {
+        let victim = null;
+        for (const seg of _hcSegments) if (seg !== keep && (!victim || seg.used < victim.used)) victim = seg;
+        if (!victim) return;
+        const s = victim.cache.segs;
+        s.splice(victim.cache._after(victim.start), 1);
+        _hcSegments.delete(victim);
+        _hcTotal -= victim.buf.byteLength;
+    }
+}
+
+function _hierarchyCacheAt(url) {
+    const key = new URL(url, document.baseURI).href;
+    let cache = _hcCaches.get(key);
+    if (!cache) { cache = new HierarchyCache(key); _hcCaches.set(key, cache); }
+    return cache;
+}
+
+// The cache of a 2.0 NodeLoader's hierarchy.bin, remembered on the loader.
+function _hierarchyCacheOf(loader) {
+    return loader._brushHierarchyCache ??= _hierarchyCacheAt(`${loader.url}/../hierarchy.bin`);
+}
+
+function _hierarchyCacheFor(geom) {
+    return _hierarchyCacheOf(geom.loader);
+}
+
+// Potree's NodeLoader.loadHierarchy, reading through the cache; parsing stays Potree's.
+// Installed once, on the prototype every 2.0 cloud's loader shares.
+(function hookPotreeHierarchyReads() {
+    const proto = window.Potree?.NodeLoader?.prototype;
+    if (!proto || typeof proto.loadHierarchy !== "function" || typeof proto.parseHierarchy !== "function"
+        || proto.loadHierarchy._brushHierarchyCache) return;
+    const potreeLoadHierarchy = proto.loadHierarchy;
+    const loadHierarchy = async function (node) {
+        if (!HIERARCHY_PRECACHE.enabled) return potreeLoadHierarchy.call(this, node);
+        const start = Number(node.hierarchyByteOffset);
+        const buf = await _hierarchyCacheOf(this).read(start, start + Number(node.hierarchyByteSize));
+        this.parseHierarchy(node, buf);
+        _hierarchyParsed(node);
+    };
+    loadHierarchy._brushHierarchyCache = true;
+    proto.loadHierarchy = loadHierarchy;
+})();
+
+// Where a 2.0 chunk root's subtree span ends (exclusive), from the hierarchy in memory:
+// at the next proxy of its parent chunk, else where the parent's span ends; the root's
+// at the end of the file. null when unknown: the file size not seen yet, or a node
+// outside the live octree (the ledger compare's detached copies).
+const _hcSpanEnds = new WeakMap();      // geometry → Map(chunk offset → span end)
+const _hcChunkProxies = new WeakMap();  // parsed chunk root → its proxies' offsets, sorted
+
+function _hierarchySpanEnd(geom, node) {
+    let ends = _hcSpanEnds.get(geom);
+    if (!ends) { ends = new Map(); _hcSpanEnds.set(geom, ends); }
+    const start = Number(node.hierarchyByteOffset);
+    const known = ends.get(start);
+    if (known !== undefined) return known;
+    let parent = node.parent;
+    while (parent && parent.hierarchyByteOffset === undefined) parent = parent.parent;
+    let end = null;
+    if (parent) {
+        const offs = _hierarchyChunkProxies(parent);
+        let lo = 0, hi = offs.length;                   // first proxy after this one
+        while (lo < hi) { const m = (lo + hi) >>> 1; if (offs[m] <= start) lo = m + 1; else hi = m; }
+        end = lo < offs.length ? offs[lo] : _hierarchySpanEnd(geom, parent);
+    } else if (node === geom.root) {
+        end = _hierarchyCacheFor(geom).size;
+    }
+    if (end !== null) ends.set(start, end);
+    return end;
+}
+
+// The proxies of a parsed chunk: the nodes below its root, within the chunk, that start chunks.
+function _hierarchyChunkProxies(chunkRoot) {
+    let offs = _hcChunkProxies.get(chunkRoot);
+    if (!offs) {
+        offs = [];
+        (function walk(n) {
+            for (let i = 0; i < 8; i++) {
+                const c = n.children[i];
+                if (!c) continue;
+                if (c.hierarchyByteOffset !== undefined) offs.push(Number(c.hierarchyByteOffset));
+                else walk(c);
+            }
+        })(chunkRoot);
+        offs.sort((a, b) => a - b);
+        _hcChunkProxies.set(chunkRoot, offs);
+    }
+    return offs;
+}
+
+// Span ends of one chunk's proxies from their offsets alone: each ends where the next
+// starts, the last where the chunk's own span ends (`end`, or null when unknown).
+function _siblingSpanEnds(offsets, end) {
+    const sorted = [...offsets].sort((a, b) => a - b);
+    const next = new Map();
+    for (let i = 0; i < sorted.length; i++) next.set(sorted[i], i + 1 < sorted.length ? sorted[i + 1] : end);
+    return offsets.map(o => next.get(o));
+}
+
+// What to fetch for proxies whose chunks are about to be read, as [start, chunkEnd,
+// spanEnd] items: the whole span when it's at most spanMax, else the chunk alone.
+function _hierarchyPrefetchItems(geom, items, spanMax, gap, max) {
+    const cache = _hierarchyCacheFor(geom);
+    if (!cache.layoutOk) spanMax = 0;
+    return cache.prefetch(
+        items.map(([start, chunkEnd, end]) =>
+            [start, end !== null && end >= chunkEnd && end - start <= spanMax ? end : chunkEnd]),
+        gap, max);
+}
+
+// The layout check for a chunk just read: `proxyOffsets` are its proxies' offsets.
+function _hierarchyCheckChunk(geom, start, size, spanEnd, proxyOffsets) {
+    if (!HIERARCHY_PRECACHE.enabled) return;
+    _hierarchyCacheFor(geom).checkLayout(Number(start) + Number(size), spanEnd,
+        [...proxyOffsets].sort((a, b) => a - b));
+}
+
+function _proxyItem(geom, proxy) {
+    const start = Number(proxy.hierarchyByteOffset);
+    return [start, start + Number(proxy.hierarchyByteSize), _hierarchySpanEnd(geom, proxy)];
+}
+
+// Span bytes the profiler and the grid have prefetched for subtrees they haven't finished
+// reading. They fetch a span whole only while this stays within readerBudget, so a read
+// through a huge subtree streams through the cache instead of flooding it.
+let _readerHeld = 0;
+
+// The profiler and the grid read every chunk below the proxies they reach, so they
+// fetch whole spans, in bigger requests than strokes, as far as the budget goes; the
+// rest chunk by chunk, merged with their neighbours. Returns the span bytes held for
+// each item, for the caller to give back once it has read that item's subtree.
+function _hierarchyPrefetchForReader(geom, items) {
+    const held = new Array(items.length).fill(0);
+    if (!HIERARCHY_PRECACHE.enabled || items.length === 0) return held;
+    const P = HIERARCHY_PRECACHE, cache = _hierarchyCacheFor(geom);
+    const spanMax = cache.layoutOk ? P.readerSpanMax : 0;
+    const ranges = items.map(([start, chunkEnd, end], i) => {
+        if (end !== null && end >= chunkEnd && end - start <= spanMax
+            && _readerHeld + (end - start) <= P.readerBudget && !cache.covered(start, end)) {
+            held[i] = end - start;
+            _readerHeld += held[i];
+            return [start, end];
+        }
+        return [start, chunkEnd];
+    });
+    cache.prefetch(ranges, P.mergeGap, P.readerSpanMax);
+    return held;
+}
+
+// Runs fn(0) … fn(n − 1), at most k at a time. After a failure no new call starts; the
+// running ones finish, then the first error is thrown.
+async function _eachLimited(n, k, fn) {
+    let next = 0, failed = false, error;
+    const worker = async () => {
+        while (!failed && next < n) {
+            const i = next++;
+            try { await fn(i); }
+            catch (e) { if (!failed) { failed = true; error = e; } }
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(k, n) }, worker));
+    if (failed) throw error;
+}
+
+// Reads the subtrees below a chunk's proxies (or a walk's), `items` as [start, chunkEnd,
+// spanEnd]: one merged prefetch, then each(i) reads item i's subtree, readerConcurrency
+// at a time. Depth-first and bounded, so the readers' memory doesn't grow with the size
+// of what they read (a whole-cloud count of LA County passes 15.6 M chunks).
+async function _readerDescend(geom, items, each) {
+    const held = _hierarchyPrefetchForReader(geom, items);
+    const release = (i) => { _readerHeld -= held[i]; held[i] = 0; };
+    try {
+        await _eachLimited(items.length, HIERARCHY_PRECACHE.readerConcurrency, async (i) => {
+            try { await each(i); } finally { release(i); }
+        });
+    } finally {
+        for (let i = 0; i < held.length; i++) release(i);   // items a failure left unread
+    }
+}
+
+// Strokes running per geometry, each told of the chunks parsed while it runs.
+const _hcStrokes = new Map();           // geometry → Set(stroke planner)
+
+function _hierarchyParsed(node) {
+    const geom = node.octreeGeometry;
+    const cache = _hierarchyCacheFor(geom);
+    if (cache.layoutOk) {
+        cache.checkLayout(Number(node.hierarchyByteOffset) + Number(node.hierarchyByteSize),
+            _hierarchySpanEnd(geom, node), _hierarchyChunkProxies(node));
+    }
+    const planners = _hcStrokes.get(geom);
+    if (!planners) return;
+    for (const planner of planners) {
+        try { planner.afterParse(node); }
+        catch (e) { console.warn("[brush] hierarchy precache:", e); }
+    }
+}
+
+// A stroke's planner: collect(node, inherited, out) lists the proxies at or below `node`
+// the stroke will load. Plans the proxies in memory now and those in chunks parsed later.
+function _hierarchyStrokeBegin(geom, planner) {
+    const cache = _hierarchyCacheFor(geom);
+    if (!cache.whole && cache.size !== null && cache.size <= HIERARCHY_PRECACHE.wholeMax
+        && cache.planned >= HIERARCHY_PRECACHE.wholeFraction * cache.size && !cache.has(0, cache.size)) {
+        cache.whole = cache.fetch(0, cache.size, true).catch(() => { cache.whole = null; });
+    }
+    let planners = _hcStrokes.get(geom);
+    if (!planners) { planners = new Set(); _hcStrokes.set(geom, planners); }
+    planners.add(planner);
+    const frontier = [];
+    planner.collect(geom.root, null, frontier);
+    _hierarchyStrokePlan(geom, frontier);
+}
+
+function _hierarchyStrokePlan(geom, proxies) {
+    if (proxies.length === 0) return;
+    HIERARCHY_PRECACHE.stats.anticipated += proxies.length;
+    const P = HIERARCHY_PRECACHE;
+    _hierarchyCacheFor(geom).planned += _hierarchyPrefetchItems(geom,
+        proxies.map(p => _proxyItem(geom, p)), P.spanMax, P.mergeGap, P.requestMax);
+}
+
+function _hierarchyStrokeEnd(geom, planner) {
+    const planners = _hcStrokes.get(geom);
+    if (!planners) return;
+    planners.delete(planner);
+    if (planners.size === 0) _hcStrokes.delete(geom);
+}
+
 // One Potree 2.0 hierarchy chunk: 22-byte records (type u8, childMask u8, numPoints
 // u32, byteOffset i64, byteSize i64), breadth-first. Record 0 is the chunk's own
 // root; type-2 records are proxies, which reappear as record 0 of the chunk they
 // point to.
 async function _fetchChunk20(geom, offset, size) {
+    if (HIERARCHY_PRECACHE.enabled) {
+        const cache = _hierarchyCacheFor(geom);
+        await cache.wholeForReaders();
+        if (cache.size !== null) _hierarchyBytes.set(geom, cache.size);
+        const start = Number(offset);
+        return new DataView(await cache.read(start, start + Number(size)));
+    }
     const file = await _hierarchyFile(geom);
     if (file) return new DataView(file, Number(offset), Number(size));
     return _hierarchyFetch(async () => {
@@ -2547,21 +3030,32 @@ function _fetchPageCopc(geom, page) {
     return _hierarchyFetch(() => _withRetries(() => window.Copc.Copc.loadHierarchyPage(geom.getter, page)));
 }
 
-function _countChunk20(geom, offset, size) {
+// `spanEnd`: where the chunk's subtree span ends, or null (see the hierarchy cache).
+// Only chunks with proxies stay memoized: one without is a single read, and most chunks
+// are like that (15.6 M of LA County's, whose memo would outgrow the JS heap).
+function _countChunk20(geom, offset, size, spanEnd = null) {
+    let hasProxies = false;
     return _countOnce(geom, offset, async () => {
         const view = await _fetchChunk20(geom, offset, size);
         let nodes = 0, points = 0;
-        const nested = [];
+        const proxies = [];
         for (let o = 0; o + 22 <= view.byteLength; o += 22) {
             const byteOffset = view.getBigInt64(o + 6, true);
             const byteSize   = view.getBigInt64(o + 14, true);
-            if (view.getUint8(o) === 2) { nested.push(_countChunk20(geom, byteOffset, byteSize)); continue; }
+            if (view.getUint8(o) === 2) { proxies.push([byteOffset, byteSize]); continue; }
             nodes++;
             if (byteSize !== 0n) points += view.getUint32(o + 2, true);   // the loader's #1125 workaround
         }
-        for (const r of await Promise.all(nested)) { nodes += r.nodes; points += r.points; }
+        hasProxies = proxies.length > 0;
+        const offsets = proxies.map(([o]) => Number(o));
+        _hierarchyCheckChunk(geom, offset, size, spanEnd, offsets);
+        const ends = _siblingSpanEnds(offsets, spanEnd);
+        await _readerDescend(geom, proxies.map(([o, s], i) => [Number(o), Number(o + s), ends[i]]), async (i) => {
+            const r = await _countChunk20(geom, proxies[i][0], proxies[i][1], ends[i]);
+            nodes += r.nodes; points += r.points;
+        });
         return { nodes, points };
-    });
+    }, () => hasProxies);
 }
 
 function _countPageCopc(geom, page) {
@@ -2579,24 +3073,39 @@ function _countPageCopc(geom, page) {
  * Nodes and points in the subtree under `root`, root included, per the file's full
  * hierarchy rather than the part of it that happens to be in memory.
  */
-async function countSubtreeFromFile(root) {
+function countSubtreeFromFile(root) {
+    return _countSubtreesFromFile([root]);
+}
+
+// The same for several disjoint subtrees, summed: their proxies are read as one set, so
+// neighbouring subtrees share requests.
+async function _countSubtreesFromFile(roots) {
     let nodes = 0, points = 0;
+    const proxies = new Map();                              // 2.0 geometry → proxies below the roots
     const pending = [];
-    (function walk(node) {
+    const add = (r) => { nodes += r.nodes; points += r.points; };
+    const walk = (node) => {
         if (node.nodeType === 2) {                          // 2.0 proxy: chunk not parsed yet
-            pending.push(_countChunk20(node.octreeGeometry, node.hierarchyByteOffset, node.hierarchyByteSize));
+            const list = proxies.get(node.octreeGeometry);
+            if (list) list.push(node); else proxies.set(node.octreeGeometry, [node]);
             return;
         }
         const page = node.owner && !node.nodeinfo && node.owner.pages[window.Copc.Key.toString(node.key)];
         if (page) {                                         // COPC node whose page isn't loaded
-            pending.push(_countPageCopc(node.owner, page));
+            pending.push(_countPageCopc(node.owner, page).then(add));
             return;
         }
         nodes++;
         points += geoNodeNumPoints(node);
         for (let i = 0; i < 8; i++) if (node.children[i]) walk(node.children[i]);
-    })(root);
-    for (const r of await Promise.all(pending)) { nodes += r.nodes; points += r.points; }
+    };
+    roots.forEach(walk);
+    for (const [geom, list] of proxies) {
+        const items = list.map(p => _proxyItem(geom, p));
+        pending.push(_readerDescend(geom, items, async (i) =>
+            add(await _countChunk20(geom, list[i].hierarchyByteOffset, list[i].hierarchyByteSize, items[i][2]))));
+    }
+    await Promise.all(pending);
     return { nodes, points };
 }
 
@@ -2616,21 +3125,20 @@ function _boxMeetsSphere(box, c, radiusSq) {
 // A 2.0 chunk's records are breadth-first, each node's children in child-index order,
 // so a record's box follows from its parent's by createChildAABB's split (z=1, y=2, x=4).
 // `box` is the chunk root's (record 0's) box.
-async function _countCoveredChunk20(geom, offset, size, box, c, radiusSq) {
+async function _countCoveredChunk20(geom, offset, size, box, c, radiusSq, spanEnd = null) {
     const view = await _fetchChunk20(geom, offset, size);
     const n = Math.floor(view.byteLength / 22);
     const b = new Float64Array(6 * n);              // min xyz, max xyz per record
     b.set([box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z]);
     let next = 1, nodes = 0, points = 0;
-    const nested = [];
+    const proxies = [];                             // [offset, size, box, hit]
     for (let i = 0; i < n; i++) {
         const o = 22 * i, k = 6 * i;
         _coveredBox.min.set(b[k], b[k + 1], b[k + 2]);
         _coveredBox.max.set(b[k + 3], b[k + 4], b[k + 5]);
         const hit = _boxMeetsSphere(_coveredBox, c, radiusSq);
         if (view.getUint8(o) === 2) {               // proxy: its subtree is its own chunk
-            if (hit) nested.push(_countCoveredChunk20(geom, view.getBigInt64(o + 6, true),
-                view.getBigInt64(o + 14, true), _coveredBox.clone(), c, radiusSq));
+            proxies.push([view.getBigInt64(o + 6, true), view.getBigInt64(o + 14, true), hit && _coveredBox.clone(), hit]);
             continue;
         }
         if (hit) {
@@ -2649,7 +3157,15 @@ async function _countCoveredChunk20(geom, offset, size, box, c, radiusSq) {
             }
         }
     }
-    for (const r of await Promise.all(nested)) { nodes += r.nodes; points += r.points; }
+    const offsets = proxies.map(([o]) => Number(o));
+    _hierarchyCheckChunk(geom, offset, size, spanEnd, offsets);
+    const ends = _siblingSpanEnds(offsets, spanEnd);                          // from all proxies, hit or not
+    const hits = proxies.map((p, i) => [...p, ends[i]]).filter(p => p[3]);
+    await _readerDescend(geom, hits.map(([o, s, , , end]) => [Number(o), Number(o + s), end]), async (i) => {
+        const [o, s, hitBox, , end] = hits[i];
+        const r = await _countCoveredChunk20(geom, o, s, hitBox, c, radiusSq, end);
+        nodes += r.nodes; points += r.points;
+    });
     return { nodes, points };
 }
 
@@ -2684,26 +3200,39 @@ async function _countCoveredPageCopc(geom, page, anchorKey, anchorBox, c, radius
  * Nodes and points under `root`, root included, whose boxes meet the sphere at `c`
  * (pointcloud-local) with squared radius `radiusSq`, per the file's full hierarchy.
  */
-async function countCoveredFromFile(root, c, radiusSq) {
+function countCoveredFromFile(root, c, radiusSq) {
+    return _countCoveredFromFile([root], c, radiusSq);
+}
+
+// The same for several disjoint subtrees, summed (see _countSubtreesFromFile).
+async function _countCoveredFromFile(roots, c, radiusSq) {
     let nodes = 0, points = 0;
+    const proxies = new Map();                              // 2.0 geometry → proxies the sphere meets
     const pending = [];
-    (function walk(node) {
+    const add = (r) => { nodes += r.nodes; points += r.points; };
+    const walk = (node) => {
         if (!_boxMeetsSphere(node.boundingBox, c, radiusSq)) return;
         if (node.nodeType === 2) {                          // 2.0 proxy: chunk not parsed yet
-            pending.push(_countCoveredChunk20(node.octreeGeometry, node.hierarchyByteOffset,
-                node.hierarchyByteSize, node.boundingBox, c, radiusSq));
+            const list = proxies.get(node.octreeGeometry);
+            if (list) list.push(node); else proxies.set(node.octreeGeometry, [node]);
             return;
         }
         const page = node.owner && !node.nodeinfo && node.owner.pages[window.Copc.Key.toString(node.key)];
         if (page) {                                         // COPC node whose page isn't loaded
-            pending.push(_countCoveredPageCopc(node.owner, page, node.key, node.boundingBox, c, radiusSq));
+            pending.push(_countCoveredPageCopc(node.owner, page, node.key, node.boundingBox, c, radiusSq).then(add));
             return;
         }
         nodes++;
         points += geoNodeNumPoints(node);
         for (let i = 0; i < 8; i++) if (node.children[i]) walk(node.children[i]);
-    })(root);
-    for (const r of await Promise.all(pending)) { nodes += r.nodes; points += r.points; }
+    };
+    roots.forEach(walk);
+    for (const [geom, list] of proxies) {
+        const items = list.map(p => _proxyItem(geom, p));
+        pending.push(_readerDescend(geom, items, async (i) => add(await _countCoveredChunk20(geom,
+            list[i].hierarchyByteOffset, list[i].hierarchyByteSize, list[i].boundingBox, c, radiusSq, items[i][2]))));
+    }
+    await Promise.all(pending);
     return { nodes, points };
 }
 
@@ -2718,7 +3247,10 @@ async function leafExtentAt(pc, centerWorld) {
     let node = pc.pcoGeometry.root;
     for (;;) {
         const isProxy = node.nodeType === 2 || (node.owner && !node.nodeinfo);   // 2.0 / COPC
-        if (isProxy) await waitForLoad(node);        // resolves proxy hierarchy
+        if (isProxy) {
+            await waitForLoad(node);                 // resolves proxy hierarchy
+            Potree.lru.touch(node);                  // evictable, as in processNode
+        }
         const child = Object.values(node.children).find(c => c && c.boundingBox.containsPoint(p));
         if (!child) break;
         node = child;
@@ -2732,13 +3264,8 @@ async function leafExtentAt(pc, centerWorld) {
  * the hierarchy fetches and loads the report needs never show up in its numbers.
  */
 async function reportStrokeProfile(p, pointcloud, centerWorld, radius, strokeMs) {
-    const sum = async (roots) => {
-        const total = { nodes: 0, points: 0 };
-        for (const r of await Promise.all(roots.map(countSubtreeFromFile))) {
-            total.nodes += r.nodes; total.points += r.points;
-        }
-        return total;
-    };
+    const sum = (roots) => _countSubtreesFromFile(roots);   // neighbouring subtrees share requests
+    const coveredBelowSkipped = () => _countCoveredFromFile(p.skipRoots, p.center, p.radiusSq);
     let bulk = null, same = null, leaf = null, covered = null;
     await Promise.all([
         Promise.all([sum(p.bulkRoots), sum(p.sameRoots)]).then(
@@ -2747,8 +3274,8 @@ async function reportStrokeProfile(p, pointcloud, centerWorld, radius, strokeMs)
         leafExtentAt(pointcloud, centerWorld).then(
             (r) => { leaf = r; },
             (e) => console.warn("[brush] profiler: leaf lookup failed, leaf rows omitted", e)),
-        p.skipRoots && Promise.all(p.skipRoots.map(n => countCoveredFromFile(n, p.center, p.radiusSq))).then(
-            (r) => { covered = { nodes: 0, points: 0 }; for (const x of r) { covered.nodes += x.nodes; covered.points += x.points; } },
+        p.skipRoots && coveredBelowSkipped().then(
+            (r) => { covered = r; },
             (e) => console.warn("[brush] profiler: hierarchy fetch failed, skipped-subtree rows omitted", e)),
     ]);
     const ok = bulk !== null;
@@ -2795,6 +3322,7 @@ async function reportStrokeProfile(p, pointcloud, centerWorld, radius, strokeMs)
         // "aggregate node-load wait", not wall-clock network time.
         ["time: aggregate load-wait ms",      +p.netMs.toFixed(1)],
     ];
+    window.__lastStrokeProfile = Object.fromEntries(rows);
     console.log("[brush] stroke profile");
     console.table(Object.fromEntries(rows.filter(([, v]) => v !== null)));
 }
@@ -2827,9 +3355,12 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
   const _dirtyAttrs = new Set();
   const flushDirty = () => {
       if (_dirtyAttrs.size === 0) return;
+      window.__bench?.onEditFlag?.();
       for (const attr of _dirtyAttrs) attr.needsUpdate = true;
       _dirtyAttrs.clear();
   };
+
+  let _hcPlanner = null;   // hierarchy precache for this stroke, set up below
 
   try {
     const pcName   = pointcloud.name;
@@ -2913,6 +3444,48 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
         });
     }
 
+    // ── Hierarchy precache: the proxies this stroke will load ──
+    // processNode's prunes, read-only, on the hierarchy in memory: a node the traversal
+    // would prune, bulk-mark or skip as already this class takes its subtree out; a proxy
+    // it would load is listed. Run over the in-memory octree when the stroke starts and
+    // over each chunk parsed while it runs, so their hierarchy is fetched in a few span
+    // requests ahead of the traversal (see the hierarchy cache). A wrong guess costs bytes
+    // or a request, never a different result.
+    const _hcGeom = pointcloud.pcoGeometry;
+    const _hcBox  = new THREE.Box3();
+    _hcPlanner = HIERARCHY_PRECACHE.enabled && _hcGeom?.root?.octreeGeometry === _hcGeom ? {
+        collect(node, inherited, out) {
+            const box = node.boundingBox;
+            if (boxDistSqLocal(box, _centerPcLocal.x, _centerPcLocal.y, _centerPcLocal.z) > _radiusLocalSq) return;
+            if (toClip) {
+                _hcBox.copy(box).applyMatrix4(pointcloud.matrixWorld);
+                if (isNodeFullyClipped(_hcBox, clipInverses, clipShowInside)) return;
+            }
+            const entry = pcEdits?.get(node.name);
+            const eff = isAllEntry(entry) ? entry.classification : inherited;
+            if (boxFullyInsideSphere(box, _centerPcLocal, _radiusLocalSq)) {
+                const below = descendantEntryNames(node.name);
+                if (isAllEntry(entry) && entry.classification === classification
+                    && !entry.overrides && below.length === 0) return;                // already all this class
+                let canBulk = !anyClassHidden || (eff !== null && visibleLUT[eff] === 1
+                    && entryClassesVisible(entry, visibleLUT)
+                    && below.every(name => entryClassesVisible(pcEdits.get(name), visibleLUT)));
+                if (canBulk && toClip) canBulk = isNodeFullyVisibleUnderClip(_hcBox, clipInverses, clipShowInside);
+                if (canBulk) return;                                                  // bulk-marked, not loaded
+            }
+            if (eff === classification && !getOverrides(entry)
+                && descendantEntryNames(node.name).length === 0) return;              // already this class
+            if (node.nodeType === 2) { out.push(node); return; }
+            for (let i = 0; i < 8; i++) if (node.children[i]) this.collect(node.children[i], eff, out);
+        },
+        afterParse(node) {
+            const out = [];
+            this.collect(node, node.parent ? getInheritedBaseline(pcEdits, node.parent.name) : null, out);
+            _hierarchyStrokePlan(_hcGeom, out);
+        },
+    } : null;
+    if (_hcPlanner) _hierarchyStrokeBegin(_hcGeom, _hcPlanner);
+
     async function processNode(geoNode, inheritedBaseline) {
         if (!geoNode) return;
 
@@ -2930,7 +3503,7 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
 
         const nodeName = geoNode.name;
         let ownEntry = pcEdits?.get(nodeName);
-        const effectiveBaseline = isAllEntry(ownEntry) ? ownEntry.classification : inheritedBaseline;
+        let effectiveBaseline = isAllEntry(ownEntry) ? ownEntry.classification : inheritedBaseline;
 
         if (_prof) _prof.visited++;
 
@@ -3002,8 +3575,21 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
             else       { await waitForLoad(geoNode); }
             justLoaded = true;         // onNodeLoaded → reconcileFreshNode already filled
                                        // this buffer from the current ledger (#4)
+            // Read the entry again: reconcileFreshNode may have promoted it to an "all" entry
+            // (explicitToImplicitNode), replacing the overrides Map read above. Writing into
+            // that detached Map would lose this stroke's edits to the node. Reloads mid-stroke
+            // are routine now that loaded nodes are evicted (see the LRU touch below).
+            ownEntry = pcEdits?.get(nodeName);
+            effectiveBaseline = isAllEntry(ownEntry) ? ownEntry.classification : inheritedBaseline;
         }
         if (!geoNode.geometry) return;
+
+        // Register the node with Potree's LRU, which otherwise only knows nodes the renderer
+        // has drawn: one a stroke loads off-screen or below the visible LOD would stay in
+        // memory for good. In the LRU it is evicted oldest-first once loaded points pass
+        // Potree.pointLoadLimit (2 × point budget), and until then a later stroke nearby
+        // still finds it cached instead of fetching it again.
+        Potree.lru.touch(geoNode);
 
         const classAttr = geoNode.geometry.attributes['classification'];
         const positions = geoNode.geometry.attributes.position;
@@ -3126,15 +3712,16 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
 
     await processNode(pointcloud.pcoGeometry.root, null);
 
-    // Promotion pass — direct geoNode refs, no findGeoNode search
+    // Promotion pass — direct geoNode refs, no findGeoNode search. A node evicted since
+    // the stroke edited it is promoted too: promotion reads only the ledger, numPoints and
+    // children, and dispose() keeps all of those (children are known, since it was loaded).
     if (pcEdits) {
-        for (const geoNode of editedGeoNodes) {
-            if (geoNode.loaded) explicitToImplicitNode(geoNode, pcEdits);
-        }
+        for (const geoNode of editedGeoNodes) explicitToImplicitNode(geoNode, pcEdits);
     }
 
     updateEditCount();
   } finally {
+    if (_hcPlanner) _hierarchyStrokeEnd(pointcloud.pcoGeometry, _hcPlanner);
     // Flush any remaining classification-buffer changes (#5), restore steady-state
     // concurrency, and let render-driven loads resume.
     flushDirty();
@@ -4671,6 +5258,9 @@ function openBrushPanel() {
         firstLoad = false;
     }
 
+    // Benchmark samples (seconds), same store as the ledger analysis: window.__laTimes.exportPotree / .exportWorld
+    const recordExportTime = (kind, seconds) => ((window.__laTimes ??= {})[kind] ??= []).push(seconds);
+
     // ── Export buttons (two formats) ──
     const exportRow = document.createElement("div");
     exportRow.style.cssText = "display:grid; grid-template-columns:1fr 1fr; gap:6px;";
@@ -4679,7 +5269,11 @@ function openBrushPanel() {
     browserBtn.className = "brush-action-btn brush-btn-success";
     browserBtn.textContent = "Potree-Only Export";
     browserBtn.title = "Fast ledger dump. Only for re-importing into the viewer.";
-    browserBtn.addEventListener("click", exportBrowserBinary);
+    browserBtn.addEventListener("click", async () => {
+        const t0 = performance.now();
+        try { await exportBrowserBinary(); }
+        finally { recordExportTime("exportPotree", (performance.now() - t0) / 1000); }
+    });
 
     const pythonBtn = document.createElement("button");
     pythonBtn.className = "brush-action-btn brush-btn-success";
@@ -4690,6 +5284,7 @@ function openBrushPanel() {
         const label = indicator?.querySelector("span:not(.brush-stroke-spinner)");
         const orig  = label?.textContent;
         setStrokeIndicator(true);
+        const t0 = performance.now();
         try {
             await exportWorldSpace((done, total) => {
                 if (label) label.textContent = `Writing overrides: ${done.toLocaleString()} / ${total.toLocaleString()}`;
@@ -4697,6 +5292,7 @@ function openBrushPanel() {
         } catch (e) {
             console.error("Python export failed:", e);
         } finally {
+            recordExportTime("exportWorld", (performance.now() - t0) / 1000);
             if (label && orig) label.textContent = orig;
             setStrokeIndicator(false);
         }
@@ -4969,11 +5565,12 @@ async function collectNodeBoxes(pointcloud, { limit = Infinity, onProgress } = {
     const origin = root.boundingBox.min.clone();
     const sink   = _boxSink(origin, limit);
     const pending = [];
+    const proxies = new Map();                              // 2.0 geometry → proxies not parsed yet
     (function walk(node) {
         const b = node.boundingBox;
         if (node.nodeType === 2) {                          // 2.0 proxy: chunk not parsed yet
-            const box = [b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z];
-            pending.push(_boxesChunk20(node.octreeGeometry, node.hierarchyByteOffset, node.hierarchyByteSize, box, sink));
+            const list = proxies.get(node.octreeGeometry);
+            if (list) list.push(node); else proxies.set(node.octreeGeometry, [node]);
             return;
         }
         const page = node.owner && !node.nodeinfo && node.owner.pages[window.Copc.Key.toString(node.key)];
@@ -4986,6 +5583,14 @@ async function collectNodeBoxes(pointcloud, { limit = Infinity, onProgress } = {
         if (node.hierarchyByteSize !== undefined) sink.bytes += Number(node.hierarchyByteSize);
         for (let i = 0; i < 8; i++) if (node.children[i]) walk(node.children[i]);
     })(root);
+    for (const [g, list] of proxies) {
+        const items = list.map(p => _proxyItem(g, p));
+        pending.push(_readerDescend(g, items, (i) => {
+            const b = list[i].boundingBox;
+            return _boxesChunk20(g, list[i].hierarchyByteOffset, list[i].hierarchyByteSize,
+                                 [b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z], sink, items[i][2]);
+        }));
+    }
     const ticker = onProgress && setInterval(() => {
         const total = _hierarchyBytes.get(geom);
         onProgress({ boxes: sink.count, chunks: sink.chunks, fraction: total ? Math.min(1, sink.bytes / total) : null });
@@ -5028,7 +5633,7 @@ function _boxSink(origin, limit) {
 // Boxes of a 2.0 chunk and the chunks below it. `box` is the chunk root's [min, max];
 // records are breadth-first, so each node's children are the next unclaimed records,
 // split from its box as createChildAABB does.
-async function _boxesChunk20(geom, offset, size, box, sink) {
+async function _boxesChunk20(geom, offset, size, box, sink, spanEnd = null) {
     if (sink.overflow) return;
     const view  = await _fetchChunk20(geom, offset, size);
     sink.chunks++;
@@ -5037,19 +5642,22 @@ async function _boxesChunk20(geom, offset, size, box, sink) {
     const boxes = new Float64Array(6 * n);
     boxes.set(box);
     let next = 1;
-    const nested = [];
+    const proxies = [];                                     // [offset, size, box]
     for (let i = 0; i < n; i++) {
         const o = 22 * i, b = 6 * i;
         if (i > 0 && view.getUint8(o) === 2) {              // proxy: drawn as record 0 of its own chunk
-            nested.push(_boxesChunk20(geom, view.getBigInt64(o + 6, true), view.getBigInt64(o + 14, true),
-                                      boxes.slice(b, b + 6), sink));
+            proxies.push([view.getBigInt64(o + 6, true), view.getBigInt64(o + 14, true), boxes.slice(b, b + 6)]);
             continue;
         }
         sink.add(boxes[b], boxes[b + 1], boxes[b + 2], boxes[b + 3], boxes[b + 4], boxes[b + 5]);
         const mask = view.getUint8(o + 1);
         for (let c = 0; c < 8; c++) if (mask & (1 << c)) _splitBox(boxes, b, c, 6 * next++);
     }
-    await Promise.all(nested);
+    const offsets = proxies.map(([o]) => Number(o));
+    _hierarchyCheckChunk(geom, offset, size, spanEnd, offsets);
+    const ends = _siblingSpanEnds(offsets, spanEnd);
+    await _readerDescend(geom, proxies.map(([o, s], i) => [Number(o), Number(o + s), ends[i]]),
+        (i) => _boxesChunk20(geom, proxies[i][0], proxies[i][1], proxies[i][2], sink, ends[i]));
 }
 
 // createChildAABB on flat boxes: child `c` of the box at `from`, written at `to`.

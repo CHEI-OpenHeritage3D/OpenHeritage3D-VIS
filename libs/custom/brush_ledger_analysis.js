@@ -1476,6 +1476,11 @@ function laRecount() {
     r.stats = laStats(r.tuples, r.inputIds.length);
 }
 
+// Benchmark samples (seconds) for the paper: window.__laTimes.compare / .merge; median in the console
+function laRecordTime(kind, seconds) {
+    ((window.__laTimes ??= {})[kind] ??= []).push(seconds);
+}
+
 async function laCompare() {
     if (_la.busy || laCompareBlocker()) return;
     const inputs = _la.inputs.slice();
@@ -1494,6 +1499,7 @@ async function laCompare() {
             seconds: (performance.now() - t0) / 1000,
             notes: out.notes || [],
         };
+        laRecordTime("compare", _la.result.seconds);
         laRecount();
         for (const note of _la.result.notes) laNotice("compare", "warn", note);
     } catch (e) {
@@ -1508,8 +1514,10 @@ async function laMerge() {
     const inputs = _la.inputs.slice(), rule = laEffectiveRule(), key = laMergeKey();
     _la.notices = [];
     try {
+        const t0 = performance.now();
         const clouds = await laBusy("merge", "Merging…", (signal, onProgress) =>
             laMergeWith(inputs, rule, { signal, onProgress }));
+        laRecordTime("merge", (performance.now() - t0) / 1000);
         _la.merged = { id: _la.nextId++, clouds, key, rule, inputCount: inputs.length,
                        summary: laSummarize(clouds), table: laMergedClassTable(clouds, inputs, rule) };
     } catch (e) {

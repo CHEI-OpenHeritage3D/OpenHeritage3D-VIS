@@ -1,0 +1,14 @@
+{
+  "name": "brush-bench",
+  "private": true,
+  "description": "Brush benchmark harness for the Potree classification brush (tools/brush_bench)",
+  "type": "module",
+  "engines": { "node": ">=22.12.0" },
+  "scripts": {
+    "pilot": "node run.mjs pilot",
+    "runs": "node run.mjs runs"
+  },
+  "dependencies": {
+    "puppeteer": "25.16.0"
+  }
+}

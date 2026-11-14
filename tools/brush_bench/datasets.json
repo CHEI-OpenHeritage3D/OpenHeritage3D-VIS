@@ -1,0 +1,67 @@
+{
+  "_comment": [
+    "One entry per benchmark dataset. url: the viewer page (run.mjs adds bench=1, and volumes/position/target for clip strokes).",
+    "pointcloud: the cloud strokes target (pc.name in the scene); a stroke's own pointcloud, recorded at capture, wins.",
+    "targetClass: painted by every stroke; must be absent from the data (it is checked against resident points before each stroke).",
+    "hiddenClass: hidden in the 'hidden' condition; must also be absent. block: URL patterns blocked so strokes start from an empty ledger.",
+    "forceLoadAll: load every node before the stroke (Pantheon). Timeouts in minutes; strokes may set timeoutMin.",
+    "largeStrokeRadius (meters) + largeStrokeTimeoutMin: make_strokes.py gives strokes at least this big the longer timeout."
+  ],
+  "fr38": {
+    "url": "https://pointcloud.ucsd.edu/archive_temp/oh3d_store/oh3d-vis/base_potree_template/index.html?vtype=oo3d&doi=D69P40",
+    "pointcloud": "D69P40_photogrammetry_terrestrial_simplied",
+    "pointBudget": 5000000,
+    "targetClass": 100,
+    "hiddenClass": 18,
+    "block": ["*classification_edits.gz*"],
+    "strokeTimeoutMin": 5
+  },
+  "pantheon": {
+    "url": "https://pointcloud.ucsd.edu/archive_temp/oh3d_store/oh3d-vis/base_potree_template/index.html?vtype=oh3d&doi=t9sj-mf53",
+    "pointcloud": "Pantheon lidar terrestrial",
+    "pointBudget": 10000000,
+    "forceLoadAll": true,
+    "targetClass": 100,
+    "hiddenClass": 18,
+    "block": ["*classification_edits.gz*"],
+    "strokeTimeoutMin": 5
+  },
+  "corinth": {
+    "url": "https://pointcloud.ucsd.edu/archive_temp/oh3d_store/oh3d-vis/base_potree_template/index.html?vtype=oh3d&doi=h3r7-t916",
+    "pointcloud": null,
+    "pointBudget": 5000000,
+    "targetClass": 100,
+    "hiddenClass": 18,
+    "block": ["*classification_edits.gz*"],
+    "strokeTimeoutMin": 5
+  },
+  "palisades": {
+    "url": "https://pointcloud.ucsd.edu/archive_temp/oh3d_store/oh3d-vis/base_potree_template/index.html?vtype=ac&doi=D6SW2N",
+    "pointcloud": null,
+    "pointBudget": 5000000,
+    "targetClass": 100,
+    "hiddenClass": 20,
+    "block": ["*classification_edits.gz*"],
+    "strokeTimeoutMin": 5
+  },
+  "eaton": {
+    "url": "https://pointcloud.ucsd.edu/archive_temp/oh3d_store/oh3d-vis/base_potree_template/index.html?vtype=ac&doi=D6XK5X",
+    "pointcloud": null,
+    "pointBudget": 5000000,
+    "targetClass": 100,
+    "hiddenClass": 20,
+    "block": ["*classification_edits.gz*"],
+    "strokeTimeoutMin": 5
+  },
+  "lacounty": {
+    "url": "https://pointcloud.ucsd.edu/archive_temp/oh3d_store/oh3d-vis/base_potree_template/index.html?vtype=ac&doi=D6SP4B",
+    "pointcloud": "nv5_la_county",
+    "pointBudget": 5000000,
+    "targetClass": 100,
+    "hiddenClass": 18,
+    "block": ["*classification_edits.gz*"],
+    "strokeTimeoutMin": 5,
+    "largeStrokeRadius": 200,
+    "largeStrokeTimeoutMin": 20
+  }
+}
