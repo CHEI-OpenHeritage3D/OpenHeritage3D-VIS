@@ -1514,10 +1514,147 @@ function openClassificationEditor() {
 
 const brushEdits = new Map();
 
-function isAllEntry(e)   { return e && !(e instanceof Map) && e.all === true; }
+/**
+ * Per-point overrides of one ledger node: point index → class number. An explicit entry is
+ * one of these; a hybrid entry holds one as `.overrides`. Map-like API (size, get, set, has,
+ * delete, forEach, entries/keys/values, iteration as [index, class]) plus clone().
+ *
+ * Replaces Map<index, { classification }>, which cost ~60 B per override (a Map entry plus
+ * an object per point) and ran large strokes out of heap. Storage adapts: a Map<index, class>
+ * while sparse, then, once at least 1/LEDGER_DENSE_RATIO of the node's index span is
+ * overridden, a typed array over that span holding class + 1 (0 = no override): Uint8Array,
+ * or Uint16Array once a class ≥ 255 appears. That is ~1–2 B per override instead of ~30.
+ * Iteration is insertion order while sparse and index order once dense. Nothing depends on
+ * the order: the binary export scatters overrides by index, and the rest is per point.
+ */
+const LEDGER_DENSE_RATIO = 16;   // go dense at ≥ 1/16 of the span: 16 B/override at worst, vs ~30 sparse
+const LEDGER_DENSE_MIN   = 64;   // tiny nodes stay sparse
+
+class LedgerOverrides {
+    /** @param {number} capacity expected index span (the node's point count), 0 if unknown */
+    constructor(capacity = 0) {
+        this._map = new Map();       // sparse storage; null once dense
+        this._d = null;              // dense storage: class + 1 per index, 0 = none
+        this._n = 0;                 // overrides held in _d
+        this._hi = -1;               // highest index set while sparse
+        this._maxCls = -1;           // largest class set while sparse; Infinity = must stay sparse
+        this._cap = capacity > 0 ? capacity : 0;
+    }
+
+    static _denseClass(c) { return c >= 0 && c < 65535 && c === Math.floor(c); }
+    static _denseIndex(i) { return i >= 0 && i < 0x7fffffff && i === Math.floor(i); }
+
+    get size() { return this._d === null ? this._map.size : this._n; }
+
+    get(i) {
+        const d = this._d;
+        if (d === null) return this._map.get(i);
+        const v = d[i];                  // undefined for any index outside the array
+        return v ? v - 1 : undefined;
+    }
+
+    has(i) { return this.get(i) !== undefined; }
+
+    set(i, cls) {
+        let d = this._d;
+        if (d !== null) {
+            if (!LedgerOverrides._denseClass(cls) || !LedgerOverrides._denseIndex(i)) {
+                this._toSparse();
+                return this.set(i, cls);
+            }
+            if (cls >= 255 && d.BYTES_PER_ELEMENT === 1) d = this._d = Uint16Array.from(d);
+            if (i >= d.length) d = this._grow(i + 1);
+            if (d[i] === 0) this._n++;
+            d[i] = cls + 1;
+            return this;
+        }
+        const m = this._map;
+        m.set(i, cls);
+        if (!LedgerOverrides._denseClass(cls) || !LedgerOverrides._denseIndex(i)) this._maxCls = Infinity;
+        else {
+            if (cls > this._maxCls) this._maxCls = cls;
+            if (i > this._hi) this._hi = i;
+        }
+        if (m.size >= LEDGER_DENSE_MIN && this._maxCls !== Infinity
+            && m.size * LEDGER_DENSE_RATIO >= Math.max(this._hi + 1, this._cap)) this._toDense();
+        return this;
+    }
+
+    delete(i) {
+        const d = this._d;
+        if (d === null) return this._map.delete(i);
+        if (!d[i]) return false;
+        d[i] = 0;
+        this._n--;
+        return true;
+    }
+
+    clear() {
+        this._map = new Map(); this._d = null; this._n = 0; this._hi = -1; this._maxCls = -1;
+    }
+
+    /** fn(cls, index, this), like Map.prototype.forEach; no per-entry allocation */
+    forEach(fn) {
+        const d = this._d;
+        if (d === null) { this._map.forEach((c, i) => fn(c, i, this)); return; }
+        for (let i = 0; i < d.length; i++) {
+            const v = d[i];
+            if (v !== 0) fn(v - 1, i, this);
+        }
+    }
+
+    *entries() {
+        const d = this._d;
+        if (d === null) { yield* this._map.entries(); return; }
+        for (let i = 0; i < d.length; i++) if (d[i] !== 0) yield [i, d[i] - 1];
+    }
+    *keys()   { for (const [i] of this.entries()) yield i; }
+    *values() {
+        const d = this._d;
+        if (d === null) { yield* this._map.values(); return; }
+        for (let i = 0; i < d.length; i++) if (d[i] !== 0) yield d[i] - 1;
+    }
+    [Symbol.iterator]() { return this.entries(); }
+
+    clone() {
+        const o = new LedgerOverrides(this._cap);
+        if (this._d !== null) { o._map = null; o._d = this._d.slice(); o._n = this._n; }
+        else { o._map = new Map(this._map); o._hi = this._hi; o._maxCls = this._maxCls; }
+        return o;
+    }
+
+    _toDense() {
+        const len = Math.max(this._hi + 1, this._cap);
+        const d = this._maxCls >= 255 ? new Uint16Array(len) : new Uint8Array(len);
+        this._map.forEach((c, i) => { d[i] = c + 1; });
+        this._n = this._map.size;
+        this._map = null;
+        this._d = d;
+    }
+
+    _toSparse() {
+        const d = this._d, m = new Map();
+        let hi = -1, maxCls = -1;
+        for (let i = 0; i < d.length; i++) {
+            if (d[i] === 0) continue;
+            m.set(i, d[i] - 1);
+            hi = i;
+            if (d[i] - 1 > maxCls) maxCls = d[i] - 1;
+        }
+        this._map = m; this._d = null; this._n = 0; this._hi = hi; this._maxCls = maxCls;
+    }
+
+    _grow(min) {
+        const d = new this._d.constructor(Math.max(min, Math.ceil(this._d.length * 1.5)));
+        d.set(this._d);
+        return (this._d = d);
+    }
+}
+
+function isAllEntry(e)   { return e && !(e instanceof LedgerOverrides) && e.all === true; }
 function getOverrides(e) {
-    if (e instanceof Map) return e;
-    if (isAllEntry(e) && e.overrides instanceof Map) return e.overrides;
+    if (e instanceof LedgerOverrides) return e;
+    if (isAllEntry(e) && e.overrides instanceof LedgerOverrides) return e.overrides;
     return null;
 }
 
@@ -1559,9 +1696,8 @@ function applyLedgerToNode(geoNode, pcEdits, baselineOverride, entryOverride) {
         changed = true;
     }
     if (overrides) {
-        for (const [pIndex, edit] of overrides) {
-            classAttr.array[pIndex] = edit.classification;
-        }
+        const arr = classAttr.array;
+        overrides.forEach((cls, pIndex) => { arr[pIndex] = cls; });
         changed = true;
     }
     if (changed) classAttr.needsUpdate = true;
@@ -1584,9 +1720,9 @@ function explicitToImplicitNode(geoNode, pcEdits) {
 
     // Unanimity check — short-circuit on first mismatch
     let target = null;
-    for (const edit of overrides.values()) {
-        if (target === null)                    target = edit.classification;
-        else if (edit.classification !== target) return;
+    for (const cls of overrides.values()) {
+        if (target === null)     target = cls;
+        else if (cls !== target) return;
     }
 
     // Promote
@@ -1859,8 +1995,8 @@ function exportBrowserCSV() {
             // For a pure-all entry (no overrides Map), nothing more is emitted.
             if (overrides && overrides.size > 0) {
                 lines.push("pIndex,classification");
-                for (const [pIndex, edit] of overrides) {
-                    lines.push(`${pIndex},${edit.classification}`);
+                for (const [pIndex, cls] of overrides) {
+                    lines.push(`${pIndex},${cls}`);
                 }
             }
         }
@@ -1945,10 +2081,10 @@ async function exportPythonCSV(onProgress) {
             const nodeMatrix  = new THREE.Matrix4().makeTranslation(...geoNode.boundingBox.min.toArray());
             const matrixWorld = new THREE.Matrix4().multiplyMatrices(pc.matrixWorld, nodeMatrix);
 
-            for (const [pIndex, edit] of overrides) {
+            for (const [pIndex, cls] of overrides) {
                 const ix = 3 * pIndex;
                 tmpPos.set(arr[ix], arr[ix+1], arr[ix+2]).applyMatrix4(matrixWorld);
-                lines.push(`${edit.classification},${tmpPos.x.toFixed(6)},${tmpPos.y.toFixed(6)},${tmpPos.z.toFixed(6)}`);
+                lines.push(`${cls},${tmpPos.x.toFixed(6)},${tmpPos.y.toFixed(6)},${tmpPos.z.toFixed(6)}`);
                 emitted++;
 
                 // Yield every 5k lines so the UI stays responsive
@@ -2025,10 +2161,8 @@ function mergeNodeEdit(pcEdits, nodeName, incoming) {
         const existOv = existing.overrides;
         const incomOv = incoming.overrides;
         if (existOv || incomOv) {
-            merged.overrides = new Map(existOv || []);
-            if (incomOv) {
-                for (const [k, v] of incomOv) merged.overrides.set(k, v);
-            }
+            merged.overrides = existOv ? existOv.clone() : new LedgerOverrides();
+            if (incomOv) incomOv.forEach((v, k) => merged.overrides.set(k, v));
         }
         pcEdits.set(nodeName, merged);
 
@@ -2036,21 +2170,19 @@ function mergeNodeEdit(pcEdits, nodeName, incoming) {
         // Existing is pure Map, incoming is implicit — become hybrid
         // Existing per-point edits become overrides on top of new baseline
         const merged = { all: true, classification: incoming.classification };
-        merged.overrides = new Map(existing); // existing Map
+        merged.overrides = existing.clone();
         // Incoming overrides win on conflict
-        if (incoming.overrides) {
-            for (const [k, v] of incoming.overrides) merged.overrides.set(k, v);
-        }
+        if (incoming.overrides) incoming.overrides.forEach((v, k) => merged.overrides.set(k, v));
         pcEdits.set(nodeName, merged);
 
     } else if (!incomingIsAll && existingIsAll) {
         // Existing is implicit, incoming is pure Map — merge as overrides
-        if (!existing.overrides) existing.overrides = new Map();
-        for (const [k, v] of incoming) existing.overrides.set(k, v);
+        if (!existing.overrides) existing.overrides = new LedgerOverrides();
+        incoming.forEach((v, k) => existing.overrides.set(k, v));
 
     } else {
         // Both pure Maps — union, incoming wins on conflict
-        for (const [k, v] of incoming) existing.set(k, v);
+        incoming.forEach((v, k) => existing.set(k, v));
     }
 }
 
@@ -2149,12 +2281,12 @@ function parseEditsCSV(text) {
         if (currentBaseline !== null) {
             // Hybrid: per-point overrides on top of the #all baseline
             if (!stagedEntry) stagedEntry = { all: true, classification: currentBaseline };
-            if (!stagedEntry.overrides) stagedEntry.overrides = new Map();
-            stagedEntry.overrides.set(pi, { classification: cl });
+            if (!stagedEntry.overrides) stagedEntry.overrides = new LedgerOverrides();
+            stagedEntry.overrides.set(pi, cl);
         } else {
-            // Pure Map
-            if (!stagedEntry || !(stagedEntry instanceof Map)) stagedEntry = new Map();
-            stagedEntry.set(pi, { classification: cl });
+            // Explicit (overrides only)
+            if (!(stagedEntry instanceof LedgerOverrides)) stagedEntry = new LedgerOverrides();
+            stagedEntry.set(pi, cl);
         }
     }
 
@@ -2186,12 +2318,19 @@ function fillLoadedSubtree(geoNode, classification) {
 }
 
 function applyEditsToLoadedNodes() {
+    // Every loaded node, not only the visible ones. A node loaded off-screen (by a stroke, or
+    // kept in Potree's LRU cache) is only reconciled with the ledger when it loads, so it would
+    // otherwise keep its old classes after an import and show them once it comes into view.
     for (const pointcloud of viewer.scene.pointclouds) {
         const pcEdits = brushEdits.get(pointcloud.name);
-        if (!pcEdits) continue;
+        const root = pointcloud.pcoGeometry?.root;
+        if (!pcEdits || !root) continue;
 
-        for (const node of pointcloud.visibleNodes) {
-            applyLedgerToNode(node.geometryNode, pcEdits);
+        const stack = [root];
+        while (stack.length) {
+            const node = stack.pop();
+            if (node.loaded) applyLedgerToNode(node, pcEdits);
+            for (let i = 0; i < 8; i++) if (node.children[i]) stack.push(node.children[i]);
         }
     }
 }
@@ -2393,8 +2532,8 @@ function entryClassesVisible(entry, visibleLUT) {
     if (isAllEntry(entry) && !visibleLUT[entry.classification]) return false;
     const overrides = getOverrides(entry);
     if (overrides) {
-        for (const edit of overrides.values()) {
-            if (!visibleLUT[edit.classification]) return false;
+        for (const cls of overrides.values()) {
+            if (!visibleLUT[cls]) return false;
         }
     }
     return true;
@@ -3679,24 +3818,23 @@ async function classifyInRadius(pointcloud, centerWorld, radius, classification)
                 if (!pointVisible) continue;
             }
 
-            const existing = ownOverrides?.get(i);
-            if (existing?.classification === classification) continue;
+            if (ownOverrides?.get(i) === classification) continue;
 
             classArr[i] = classification;
             nChanged++;
 
             if(!ownOverrides){
                 if (isAllEntry(ownEntry)) {
-                    ownEntry.overrides = new Map();
+                    ownEntry.overrides = new LedgerOverrides(count);
                     ownOverrides = ownEntry.overrides;
                 } else {
-                    ownOverrides = new Map();
+                    ownOverrides = new LedgerOverrides(count);
                     ensurePcEdits();
                     pcEdits.set(nodeName, ownOverrides);
                     ownEntry = ownOverrides;
                 }
             }
-            ownOverrides.set(i, { classification });
+            ownOverrides.set(i, classification);
             editedGeoNodes.add(geoNode);
         }
 
@@ -3846,10 +3984,10 @@ function printImplicitExplicitNodes() {
             const ov = overrides ? overrides.size : 0;
             if (overrides) {
                 s.pointEntries += ov;
-                for (const edit of overrides.values()) {
-                    bump(edit.classification, 1);
-                    if (edit.classification === baseline) s.noopOverrides++;
-                }
+                overrides.forEach((cls) => {
+                    bump(cls, 1);
+                    if (cls === baseline) s.noopOverrides++;
+                });
             }
 
             if (baseline !== null) {
@@ -3915,7 +4053,7 @@ function removeExplicitNodes(){
         if(!pcEdits) continue;
 
         for(const [node, obj] of pcEdits){
-            if(obj instanceof Map) pcEdits.delete(node);
+            if(obj instanceof LedgerOverrides) pcEdits.delete(node);
         }
     }
 }
@@ -3926,7 +4064,7 @@ function removeImplicitNodes(){
         if(!pcEdits) continue;
 
         for(const [node, obj] of pcEdits){
-            if(!(obj instanceof Map)) pcEdits.delete(node);
+            if(!(obj instanceof LedgerOverrides)) pcEdits.delete(node);
         }
     }
 }

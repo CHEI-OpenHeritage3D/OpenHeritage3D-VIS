@@ -94,8 +94,10 @@ function ledgerStats(pcName) {
     if (!m) return s;
     for (const e of m.values()) {
         s.entries++;
-        if (e instanceof Map) { s.explicit++; s.overrides += e.size; continue; }
-        const o = (e && e.overrides instanceof Map) ? e.overrides.size : 0;
+        // Overrides are a Map before 2026-11-14, LedgerOverrides since; both have .size
+        const isOv = (o) => o instanceof Map || (typeof LedgerOverrides !== "undefined" && o instanceof LedgerOverrides);
+        if (isOv(e)) { s.explicit++; s.overrides += e.size; continue; }
+        const o = (e && isOv(e.overrides)) ? e.overrides.size : 0;
         if (o) { s.hybrid++; s.overrides += o; } else s.implicit++;
     }
     return s;

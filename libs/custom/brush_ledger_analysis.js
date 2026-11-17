@@ -37,10 +37,10 @@
  *
  * Depends on brush_selection.js (DEFAULT_CLASSIFICATIONS, CLASSIFICATIONS, syncClassificationsToViewer,
  * rebuildClassificationGridUI, getContributorName, geoNodeNumPoints, countSubtreeFromFile,
- * _fetchChunk20, brushEdits, brushState, waitForLoad, viewer) and
+ * _fetchChunk20, _fetchPageCopc, brushEdits, brushState, waitForLoad, viewer) and
  * brush_binary_export.js (BRUSH_BINARY_MAGIC,
  * maybeGunzip, splitHeader, ByteSink, _writeVarint), which are classic scripts sharing one global
- * scope. Potree 2.0 clouds only for now.
+ * scope. Works on Potree 2.0 and COPC clouds; the ledger format is the same for both.
  */
 
 // ══════════════════════════════════════════════════════════════
@@ -803,18 +803,23 @@ function laConfusion(tuples, a, b) {
 //  of one label tuple, each tallied at once rather than point by point. A child with no entry at
 //  or below it takes the inherited baselines for its whole subtree, tallied from its point count.
 //
-//  Counts come from node objects, which carry numPoints from the hierarchy before any point data
-//  loads. Node objects exist only where the hierarchy has been expanded, though, and the viewer
-//  expands it where the camera has looked: below a proxy (nodeType 2) there are none. There the
-//  walk reads that proxy's hierarchy chunk, never point data, through _fetchChunk20, which
-//  downloads hierarchy.bin once when it's at most 64 MB. countSubtreeFromFile() counts a subtree
-//  that way; to reach entries below a proxy, Potree's own parseHierarchy() builds the proxy's
-//  nodes on a detached copy, so the live octree stays exactly as the viewer has it.
+//  Counts come from node objects, which carry their point counts from the hierarchy before any
+//  point data loads. Node objects exist only where the hierarchy has been expanded, though, and
+//  the viewer expands it where the camera has looked. Below a node whose hierarchy isn't read yet
+//  there are none: a Potree 2.0 proxy (nodeType 2), or a COPC node whose hierarchy page isn't
+//  loaded (no nodeinfo yet). There the walk reads that chunk or page, never point data: 2.0
+//  chunks through _fetchChunk20, which downloads hierarchy.bin once when it's at most 64 MB, COPC
+//  pages through _fetchPageCopc. countSubtreeFromFile() counts a subtree that way. To reach
+//  entries below such a node, Potree's own parser builds its nodes on a detached copy
+//  (laExpandProxy), so the live octree stays exactly as the viewer has it.
+//
+//  COPC names its nodes as Potree does ("r" plus child indices, from the d-x-y-z key), and point
+//  indices are record order in a node's LAZ chunk, so ledgers and both walks are the same for it.
 // ══════════════════════════════════════════════════════════════
 
 /**
  * @param {object[]} inputs   parsed ledgers in list order; tuple positions follow it
- * @param {object[]} clouds   [{ name, pc }]: the clouds to compare, loaded as Potree 2.0
+ * @param {object[]} clouds   [{ name, pc }]: the clouds to compare, loaded as Potree 2.0 or COPC
  * @param {object}   opts     { signal: AbortSignal, onProgress(text) }
  * @returns {Promise<{ hist: Map<string, number>, notes: string[] }>}
  *          hist: points per label tuple (key laTupleKey(t)); tuples without a label aren't tallied.
@@ -849,7 +854,7 @@ async function laWalkCloud(pc, ledgers, tally, signal, progress) {
     const onPath = laPathSet(ledgers);
     const reached = new Set();
     const pastEnd = new Array(n).fill(0);
-    const copies  = new Map();     // proxy → detached copy with its hierarchy chunk parsed
+    const copies  = new Map();     // proxy → detached copy with its hierarchy chunk or page parsed
     let lastYield = performance.now();
 
     async function visit(node, inherited) {
@@ -864,7 +869,7 @@ async function laWalkCloud(pc, ledgers, tally, signal, progress) {
             return;
         }
         reached.add(node.name);
-        const real = node.nodeType === 2 ? await laExpandProxy(node, copies) : node;
+        const real = laIsProxy(node) ? await laExpandProxy(node, copies) : node;
         const base = inherited.slice(), runs = new Array(n).fill(null);
         for (let i = 0; i < n; i++) {
             const e = ledgers[i]?.get(node.name);
@@ -894,10 +899,25 @@ function laPathSet(ledgers) {
     return onPath;
 }
 
-// A proxy's subtree as node objects: its hierarchy chunk parsed by Potree's own parser onto a
-// detached copy of the proxy. No point data is read, and the live octree doesn't change.
+// The hierarchy page a COPC node lists its children in, while that page isn't loaded
+function laCopcPage(node) {
+    return node.owner && !node.nodeinfo ? node.owner.pages[window.Copc.Key.toString(node.key)] : undefined;
+}
+
+// A node whose children aren't known until its hierarchy chunk (2.0) or page (COPC) is read
+function laIsProxy(node) {
+    return node.nodeType === 2 || !!laCopcPage(node);
+}
+
+// A proxy's subtree as node objects: its hierarchy chunk or page parsed by Potree's own parser
+// onto a detached copy of the proxy. No point data is read, and the live octree doesn't change.
 function laExpandProxy(proxy, copies) {
     if (!copies.has(proxy)) copies.set(proxy, (async () => {
+        if (proxy.owner) {                                  // COPC
+            const copy = new proxy.constructor(laDetachedOwner(proxy.owner), proxy.key, proxy.bounds);
+            await copy.loadHierarchy();
+            return copy;
+        }
         const geom = proxy.octreeGeometry;
         const view = await _fetchChunk20(geom, proxy.hierarchyByteOffset, proxy.hierarchyByteSize);
         const copy = new proxy.constructor(proxy.name, geom, proxy.boundingBox);
@@ -906,6 +926,27 @@ function laExpandProxy(proxy, copies) {
         return copy;
     })());
     return copies.get(proxy);
+}
+
+/**
+ * The owner for detached COPC nodes: the live geometry with a page map of its own. A COPC node's
+ * loadHierarchy() records the pages it finds below it in owner.pages; here those go into a map
+ * that falls back to the live one, so the live map gets nothing the viewer hasn't loaded. Pages
+ * are read through _fetchPageCopc, which caps and retries requests as the brush's own reads are.
+ * One per live geometry, so countSubtreeFromFile's per-owner memo lasts from one Compare to the
+ * next.
+ */
+const _laDetachedOwners = new WeakMap();
+function laDetachedOwner(geom) {
+    let owner = _laDetachedOwners.get(geom);
+    if (!owner) {
+        owner = Object.create(geom, {
+            pages: { value: Object.create(geom.pages) },
+            loadHierarchyPage: { value(key) { return _fetchPageCopc(this, this.pages[window.Copc.Key.toString(key)]); } },
+        });
+        _laDetachedOwners.set(geom, owner);
+    }
+    return owner;
 }
 
 /**
@@ -1425,10 +1466,18 @@ function laCloudRows() {
     }
     return [...named].map(([name, count]) => {
         const pc = viewer.scene.pointclouds.find(p => p.name === name);
-        const is20 = !!pc?.pcoGeometry?.loader?.metadata?.hierarchy;
-        const status = !pc ? "not in this scene" : is20 ? "Potree 2.0" : "not Potree 2.0, not supported yet";
-        return { name, count, pc, ok: !!pc && is20, status };
+        const format = pc && laCloudFormat(pc);
+        const status = !pc ? "not in this scene" : format ?? "neither Potree 2.0 nor COPC, not supported yet";
+        return { name, count, pc, ok: !!format, status };
     });
+}
+
+// The octree formats Compare can walk, by name; null for others (Potree 1.x, EPT)
+function laCloudFormat(pc) {
+    const geom = pc.pcoGeometry;
+    if (geom?.loader?.metadata?.hierarchy) return "Potree 2.0";
+    if (geom?.type === "copc" && geom.pages && window.Copc) return "COPC";
+    return null;
 }
 
 function laDatasetNote() {
@@ -1442,7 +1491,7 @@ function laDatasetNote() {
 
 function laCompareBlocker() {
     if (_la.inputs.length < 2) return "Add at least two ledgers to compare.";
-    if (!laCloudRows().some(r => r.ok)) return "None of the ledgers' clouds is loaded here as Potree 2.0.";
+    if (!laCloudRows().some(r => r.ok)) return "None of the ledgers' clouds is loaded here as Potree 2.0 or COPC.";
     return null;
 }
 
@@ -1580,12 +1629,10 @@ function laBrushEntries(nodes) {
     for (const [name, e] of nodes) {
         let overrides = null;
         if (e.runs) {
-            overrides = new Map();
+            overrides = new LedgerOverrides();
             for (let k = 0; k < e.runs.length; k += 3) {
-                // One object per run rather than per point as Import makes: the brush replaces
-                // overrides, never changes one in place.
-                const edit = { classification: e.runs[k + 2] };
-                for (let p = e.runs[k]; p < e.runs[k + 1]; p++) overrides.set(p, edit);
+                const cls = e.runs[k + 2];
+                for (let p = e.runs[k]; p < e.runs[k + 1]; p++) overrides.set(p, cls);
             }
         }
         if (e.all !== LA_NONE) {

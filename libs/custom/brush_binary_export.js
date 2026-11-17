@@ -79,7 +79,7 @@ function buildClassMap() {
         for (const [, entry] of pcEdits) {
             if (isAllEntry(entry)) seen.add(entry.classification);
             const ov = getOverrides(entry);
-            if (ov) for (const edit of ov.values()) seen.add(edit.classification);
+            if (ov) ov.forEach(cls => seen.add(cls));
         }
     }
     const list = [...seen].sort((a, b) => a - b);
@@ -102,16 +102,16 @@ function _scratchFor(n) {
  * Dense-scatter + RLE one node's overrides.
  * Scattering into a dense array is what sorts the indices — Potree 2.0
  * Morton-orders points within a node, so a brush stroke lands as a
- * contiguous run and the RLE collapses it. Iterating the Map directly
- * would emit paint order, which is spatially random.
+ * contiguous run and the RLE collapses it. Iterating sparse overrides
+ * directly would emit paint order, which is spatially random.
  */
 function encodeNodeRuns(overrides, toId) {
     let maxIdx = -1;
-    for (const pIndex of overrides.keys()) if (pIndex > maxIdx) maxIdx = pIndex;
+    overrides.forEach((_, pIndex) => { if (pIndex > maxIdx) maxIdx = pIndex; });
     const n = maxIdx + 1;
 
     const dense = _scratchFor(n);
-    for (const [pIndex, edit] of overrides) dense[pIndex] = toId[edit.classification];
+    overrides.forEach((cls, pIndex) => { dense[pIndex] = toId[cls]; });
 
     const runs = [];
     let runVal = dense[0], runLen = 1;
@@ -224,7 +224,7 @@ function parseClassMap(header) {
 
 function decodeNodeRuns(view, off, byteLen, toClass) {
     const end = off + byteLen;
-    const overrides = new Map();
+    const overrides = new LedgerOverrides();
     let cursor = 0;
 
     while (off < end) {
@@ -234,7 +234,7 @@ function decodeNodeRuns(view, off, byteLen, toClass) {
 
         if (id !== 0) {
             const classification = toClass[id];
-            for (let i = 0; i < len; i++) overrides.set(cursor + i, { classification });
+            for (let i = 0; i < len; i++) overrides.set(cursor + i, classification);
         }
         cursor += len;
     }
@@ -302,7 +302,7 @@ function parseLedgerBinary(bytes) {
                 incoming = { all: true, classification: baseline };
                 if (overrides) incoming.overrides = overrides;
             } else {
-                incoming = overrides || new Map();
+                incoming = overrides || new LedgerOverrides();
             }
             mergeNodeEdit(pcEdits, nodeName, incoming);   // same merge semantics as CSV import
         }

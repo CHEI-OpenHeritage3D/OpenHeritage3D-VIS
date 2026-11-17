@@ -200,11 +200,11 @@ async function writeWorldSpace(sink, onProgress) {
         const nodeMatrix  = new THREE.Matrix4().makeTranslation(...geoNode.boundingBox.min.toArray());
         const matrixWorld = new THREE.Matrix4().multiplyMatrices(pc.matrixWorld, nodeMatrix);
 
-        for (const [pIndex, edit] of overrides) {
+        for (const [pIndex, cls] of overrides) {
             const ix = 3 * pIndex;
             tmpPos.set(arr[ix], arr[ix + 1], arr[ix + 2]).applyMatrix4(matrixWorld);
             sink.push(
-                `${edit.classification},` +
+                `${cls},` +
                 `${tmpPos.x.toFixed(WORLD_DECIMALS)},` +
                 `${tmpPos.y.toFixed(WORLD_DECIMALS)},` +
                 `${tmpPos.z.toFixed(WORLD_DECIMALS)}`

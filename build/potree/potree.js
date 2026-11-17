@@ -90417,7 +90417,7 @@ ENDSEC
 					element.style.height = "2.5em";
 					element.style.padding = "0";
 					element.style.textShadow = "black 2px 2px 2px";
-					element.style.display = "block";
+					element.style.display = "none";		// vr button hidden by aviral 11/16/2026
 
 					elButtons.append(element);
 
